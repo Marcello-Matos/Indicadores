@@ -1,9 +1,36 @@
 <?php
+// =========================================================================
+// VERIFICAÇÃO DE LOGIN E CARREGAMENTO DO NOME DO USUÁRIO
+// =========================================================================
+session_start();
+
+// Verificar se o usuário está logado
+if (!isset($_SESSION['usuario_logado']) || $_SESSION['usuario_logado'] !== true) {
+    header('Location: login.php');
+    exit();
+}
+
+// Carregar informações do usuário da sessão
+$usuario_nome = $_SESSION['usuario_nome'] ?? 'Usuário';
+$usuario_login = $_SESSION['usuario_login'] ?? '';
+$usuario_departamento = $_SESSION['usuario_departamento'] ?? '';
+
+// =========================================================================
+// ATENÇÃO: LINHAS DE EXIBIÇÃO DE ERROS - ESSENCIAIS PARA DEPURAR
+// Se a página ficar em branco, essas linhas forçarão a mensagem de erro.
+error_reporting(E_ALL);
+ini_set('display_errors', 1);
+// =========================================================================
+
+// Controle para exibir ou ocultar os logs de debug no HTML.
+// Altere para 'true' se precisar ver o log de SQL ou dados.
+$show_debug_html = false; // Voltei para false para produção
+
 // Configurações de conexão
 $serverName = "192.168.0.8,1433";
 $connectionOptions = [
     "Database" => "Indicadores",
-    "Uid" => "sa",
+    "Uid" => "sa", 
     "PWD" => "aplak2904&",
     "CharacterSet" => "UTF-8",
     "TrustServerCertificate" => true,
@@ -13,357 +40,185 @@ $connectionOptions = [
 // Criar conexão
 $conn = sqlsrv_connect($serverName, $connectionOptions);
 
-// Processar filtros
-$data_inicio = $_POST['data_inicio'] ?? '';
-$data_fim = $_POST['data_fim'] ?? '';
-$status_filtro = $_POST['status_filtro'] ?? '';
-$periodo = $_POST['periodo'] ?? '';
-$mes_ano = $_POST['mes_ano'] ?? '';
-$ano = $_POST['ano'] ?? '';
-$trimestre = $_POST['trimestre'] ?? '';
+// Variáveis de log e erro
+$debug_logs = [];
+$erro = '';
+
+if ($conn === false) {
+    $erro = "Erro de conexão com o Banco de Dados. Verifique o driver SQLSRV e as credenciais. Detalhes: " . print_r(sqlsrv_errors(), true);
+    $debug_logs[] = $erro;
+}
 
 // Inicializar variáveis
-$total_pedidos = 0;
-$atrasados = 0;
-$total_clientes = 0;
-$total_produtos = 0;
-$vendas_ultimos_12_meses = 0; 
-
-// Arrays para gráficos
+$total_registros = 0;
+$dados = [];
 $dados_graficos = [
     'status' => [],
     'top_clientes' => [],
     'top_produtos' => [],
-    'dias_atraso' => [],
     'vendas_mensais' => [],
     'vendas_anuais' => []
 ];
 
-// Arrays para dados temporais
-$dados_temporais = [
-    'vendas_mes_atual' => 0,
-    'crescimento_mensal' => 0,
-    'vendas_ano_atual' => 0,
-    'melhor_mes' => '-',
-    'vendas_ultimos_12_meses' => 0
-];
+// Processar filtros
+$data_inicio = filter_input(INPUT_POST, 'data_inicio', FILTER_SANITIZE_SPECIAL_CHARS) ?? '';
+$data_fim 	 = filter_input(INPUT_POST, 'data_fim', FILTER_SANITIZE_SPECIAL_CHARS) ?? '';
+$status_filtro = filter_input(INPUT_POST, 'status_filtro', FILTER_SANITIZE_SPECIAL_CHARS) ?? '';
 
-// Função para obter vendas dos últimos 12 meses
-function obterVendasUltimos12Meses($conn, $where_conditions = [], $query_params = []) {
-    $where_conditions_12meses = [];
-    $query_params_12meses = [];
-    
-    foreach ($where_conditions as $index => $condition) {
-        if (strpos($condition, 'DtEmissao') === false && 
-            strpos($condition, 'DATEPART') === false &&
-            strpos($condition, 'CAST(DtEmissao') === false) {
-            $where_conditions_12meses[] = $condition;
-            if (isset($query_params[$index])) {
-                $query_params_12meses[] = $query_params[$index];
-            }
-        }
-    }
-    
-    $where_conditions_12meses[] = "DtEmissao >= DATEADD(MONTH, -12, GETDATE())";
-    
-    $where_sql_12meses = "";
-    if (!empty($where_conditions_12meses)) {
-        $where_sql_12meses = "WHERE " . implode(" AND ", $where_conditions_12meses);
-    }
-    
-    $sql_12meses = "SELECT COUNT(*) as total FROM vW_Ind46 $where_sql_12meses";
-    $stmt_12meses = sqlsrv_query($conn, $sql_12meses, $query_params_12meses);
-    
-    if ($stmt_12meses !== false) {
-        $row = sqlsrv_fetch_array($stmt_12meses, SQLSRV_FETCH_ASSOC);
-        return $row ? $row['total'] : 0;
-    }
-    
-    return 0;
+// Validação das datas
+if (!empty($data_inicio) && !empty($data_fim) && $data_inicio > $data_fim) {
+    $erro = "Data início não pode ser maior que data fim!";
 }
 
-if ($conn) {
+// ----------------------------------------------------
+// LÓGICA DE EXECUÇÃO DE CONSULTAS
+// ----------------------------------------------------
+if (empty($erro) && $conn !== false) {
     try {
-        // CONSTRUÇÃO DINÂMICA DO WHERE
+        // --- CONSTRUÇÃO DA CLÁUSULA WHERE E PARÂMETROS ---
         $where_conditions = [];
         $query_params = [];
-
-        // 1. Filtro de data de início/fim manual
+        
+        // Filtro de Datas
         if (!empty($data_inicio)) {
             $where_conditions[] = "CAST(DtEmissao AS DATE) >= ?";
             $query_params[] = $data_inicio;
         }
-
         if (!empty($data_fim)) {
             $where_conditions[] = "CAST(DtEmissao AS DATE) <= ?";
             $query_params[] = $data_fim;
         }
-
-        // 2. Filtro por período rápido
-        if (!empty($periodo) && empty($data_inicio) && empty($data_fim)) {
-            switch ($periodo) {
-                case 'hoje':
-                    $where_conditions[] = "CAST(DtEmissao AS DATE) = CAST(GETDATE() AS DATE)";
-                    break;
-                case 'ontem':
-                    $where_conditions[] = "CAST(DtEmissao AS DATE) = CAST(DATEADD(DAY, -1, GETDATE()) AS DATE)";
-                    break;
-                case 'semana_atual':
-                    $where_conditions[] = "DtEmissao >= DATEADD(wk, DATEDIFF(wk, 0, GETDATE()), 0) AND DtEmissao < DATEADD(wk, DATEDIFF(wk, 0, GETDATE()) + 1, 0)";
-                    break;
-                case 'semana_anterior':
-                    $where_conditions[] = "DtEmissao >= DATEADD(wk, DATEDIFF(wk, 0, GETDATE()) - 1, 0) AND DtEmissao < DATEADD(wk, DATEDIFF(wk, 0, GETDATE()), 0)";
-                    break;
-                case 'mes_atual':
-                    $where_conditions[] = "DATEPART(MONTH, DtEmissao) = DATEPART(MONTH, GETDATE()) AND DATEPART(YEAR, DtEmissao) = DATEPART(YEAR, GETDATE())";
-                    break;
-                case 'mes_anterior':
-                    $where_conditions[] = "DATEPART(MONTH, DtEmissao) = DATEPART(MONTH, DATEADD(MONTH, -1, GETDATE())) AND DATEPART(YEAR, DtEmissao) = DATEPART(YEAR, DATEADD(MONTH, -1, GETDATE()))";
-                    break;
-                case 'trimestre_atual':
-                    $where_conditions[] = "DATEPART(QUARTER, DtEmissao) = DATEPART(QUARTER, GETDATE()) AND DATEPART(YEAR, DtEmissao) = DATEPART(YEAR, GETDATE())";
-                    break;
-                case 'ano_atual':
-                    $where_conditions[] = "DATEPART(YEAR, DtEmissao) = DATEPART(YEAR, GETDATE())";
-                    break;
-                case 'ano_anterior':
-                    $where_conditions[] = "DATEPART(YEAR, DtEmissao) = DATEPART(YEAR, GETDATE()) - 1";
-                    break;
-            }
-        }
-
-        // 3. Filtro por mês/ano específico
-        if (!empty($mes_ano) && empty($periodo) && empty($data_inicio) && empty($data_fim)) {
-            list($ano_filtro, $mes_filtro) = explode('-', $mes_ano);
-            $where_conditions[] = "DATEPART(YEAR, DtEmissao) = ? AND DATEPART(MONTH, DtEmissao) = ?";
-            $query_params[] = $ano_filtro;
-            $query_params[] = $mes_filtro;
-        }
-
-        // 4. Filtro por ano específico
-        if (!empty($ano) && empty($periodo) && empty($mes_ano) && empty($data_inicio) && empty($data_fim)) {
-            $where_conditions[] = "DATEPART(YEAR, DtEmissao) = ?";
-            $query_params[] = $ano;
-        }
         
-        // 5. Filtro de status
+        $where_clause_graphs = !empty($where_conditions) ? " WHERE " . implode(" AND ", $where_conditions) : "";
+        $params_datas = $query_params;
+        
+        // --- CONSULTA PRINCIPAL ---
+        $main_where_conditions = $where_conditions;
+        $main_query_params = $query_params;
+        
         if (!empty($status_filtro)) {
+            // Converter o status do filtro para o valor numérico correto
             $status_map = [
-                'ATRASADO' => 20,
-                'ENTREGUE' => 30, 
-                'NO PRAZO' => 10
+                'ATRASADO' => '10',
+                'NA DATA' => '20', 
+                'ADIANTADO' => '30'
+            ];
+            $status_value = $status_map[$status_filtro] ?? $status_filtro;
+            $main_where_conditions[] = "StatusEntrega = ?";
+            $main_query_params[] = $status_value;
+        }
+
+        $main_where_clause = !empty($main_where_conditions) ? " WHERE " . implode(" AND ", $main_where_conditions) : "";
+        
+        $sql_principal = "SELECT * FROM vW_Ind46_Formatada $main_where_clause ORDER BY 1 DESC";
+        
+        $debug_logs[] = "SQL Principal: " . $sql_principal;
+
+        $stmt = sqlsrv_query($conn, $sql_principal, $main_query_params);
+        
+        if ($stmt === false) {
+            throw new Exception("Erro ao executar consulta principal: " . print_r(sqlsrv_errors(), true));
+        }
+
+        while ($row = sqlsrv_fetch_array($stmt, SQLSRV_FETCH_ASSOC)) {
+            $dados[] = $row;
+            $total_registros++;
+        }
+        sqlsrv_free_stmt($stmt);
+
+        $debug_logs[] = "Registros encontrados na consulta principal: " . $total_registros;
+
+        // --- CONSULTAS PARA GRÁFICOS ---
+        
+        // 1. Gráfico de Status - Mapear valores numéricos para textos
+        $sql_status = "SELECT StatusEntrega, COUNT(*) as total FROM vW_Ind46_Formatada $where_clause_graphs GROUP BY StatusEntrega";
+        
+        $results_status = sqlsrv_query($conn, $sql_status, $params_datas);
+        if ($results_status) {
+            // Mapeamento dos valores de status
+            $status_labels = [
+                '10' => 'ATRASADO',
+                '20' => 'NA DATA', 
+                '30' => 'ADIANTADO'
             ];
             
-            if (isset($status_map[$status_filtro])) {
-                $where_conditions[] = "CodStatusPedido = ?";
-                $query_params[] = $status_map[$status_filtro];
+            while ($row = sqlsrv_fetch_array($results_status, SQLSRV_FETCH_ASSOC)) {
+                $status_key = $row['StatusEntrega'];
+                $label = $status_labels[$status_key] ?? $status_key;
+                $dados_graficos['status'][$label] = $row['total'];
             }
+            sqlsrv_free_stmt($results_status);
         }
 
-        // Combinação final do WHERE
-        $where_sql = "";
-        if (!empty($where_conditions)) {
-            $where_sql = "WHERE " . implode(" AND ", $where_conditions);
-        }
-
-        // Total de Pedidos
-        $sql_total = "SELECT COUNT(*) as total FROM vW_Ind46 $where_sql";
-        $stmt_total = sqlsrv_query($conn, $sql_total, $query_params);
-        if ($stmt_total !== false) {
-            $row_total = sqlsrv_fetch_array($stmt_total, SQLSRV_FETCH_ASSOC);
-            $total_pedidos = $row_total ? $row_total['total'] : 0;
-        }
-
-        // Pedidos Atrasados
-        $atrasados_conditions = [];
-        $atrasados_params = [];
-        $param_index = 0;
+        // 2. Gráfico de Top 10 Clientes
+        $sql_clientes = "SELECT TOP 10 Cliente, COUNT(*) as total FROM vW_Ind46_Formatada $where_clause_graphs GROUP BY Cliente ORDER BY total DESC";
         
-        foreach ($where_conditions as $condition) {
-            if (strpos($condition, 'CodStatusPedido = ?') === false) {
-                $atrasados_conditions[] = $condition;
-                if (isset($query_params[$param_index])) {
-                    $atrasados_params[] = $query_params[$param_index];
-                }
+        $results_clientes = sqlsrv_query($conn, $sql_clientes, $params_datas);
+        if ($results_clientes) {
+            while ($row = sqlsrv_fetch_array($results_clientes, SQLSRV_FETCH_ASSOC)) {
+                $dados_graficos['top_clientes'][$row['Cliente']] = $row['total'];
             }
-            $param_index++;
+            sqlsrv_free_stmt($results_clientes);
         }
 
-        $atrasados_where = "WHERE CodStatusPedido = 20";
-        if (!empty($atrasados_conditions)) {
-            $atrasados_where .= " AND " . implode(" AND ", $atrasados_conditions);
-        }
+        // 3. Gráfico de Top 10 Produtos
+        $sql_produtos = "SELECT TOP 10 Produto, COUNT(*) as total FROM vW_Ind46_Formatada $where_clause_graphs GROUP BY Produto ORDER BY total DESC";
         
-        if ($status_filtro === 'ATRASADO') {
-            $atrasados = $total_pedidos;
-        } else {
-            $sql_atrasados = "SELECT COUNT(*) as atrasados FROM vW_Ind46 $atrasados_where";
-            $stmt_atrasados = sqlsrv_query($conn, $sql_atrasados, $atrasados_params);
-            if ($stmt_atrasados !== false) {
-                $row_atrasados = sqlsrv_fetch_array($stmt_atrasados, SQLSRV_FETCH_ASSOC);
-                $atrasados = $row_atrasados ? $row_atrasados['atrasados'] : 0;
+        $results_produtos = sqlsrv_query($conn, $sql_produtos, $params_datas);
+        if ($results_produtos) {
+            while ($row = sqlsrv_fetch_array($results_produtos, SQLSRV_FETCH_ASSOC)) {
+                $dados_graficos['top_produtos'][$row['Produto']] = $row['total'];
             }
+            sqlsrv_free_stmt($results_produtos);
         }
+
+        // 4. Gráfico de Vendas Mensais (Últimos 12 meses) - CORRIGIDO
+        $sql_mensal = "SELECT 
+                     CONVERT(VARCHAR(7), CONVERT(DATETIME, DtEmissao), 120) as mes_ano, 
+                     COUNT(*) as total 
+                     FROM vW_Ind46_Formatada 
+                     WHERE CONVERT(DATETIME, DtEmissao) >= DATEADD(MONTH, -12, GETDATE())
+                     GROUP BY CONVERT(VARCHAR(7), CONVERT(DATETIME, DtEmissao), 120) 
+                     ORDER BY mes_ano";
         
-        // Total de Clientes e Produtos
-        $sql_clientes = "SELECT COUNT(DISTINCT Cliente) as clientes FROM vW_Ind46 $where_sql";
-        $stmt_clientes = sqlsrv_query($conn, $sql_clientes, $query_params);
-        if ($stmt_clientes !== false) {
-            $row_clientes = sqlsrv_fetch_array($stmt_clientes, SQLSRV_FETCH_ASSOC);
-            $total_clientes = $row_clientes ? $row_clientes['clientes'] : 0;
-        }
-
-        $sql_produtos = "SELECT COUNT(DISTINCT Produto) as produtos FROM vW_Ind46 $where_sql";
-        $stmt_produtos = sqlsrv_query($conn, $sql_produtos, $query_params);
-        if ($stmt_produtos !== false) {
-            $row_produtos = sqlsrv_fetch_array($stmt_produtos, SQLSRV_FETCH_ASSOC);
-            $total_produtos = $row_produtos ? $row_produtos['produtos'] : 0;
-        }
-
-        // Obter vendas dos últimos 12 meses
-        $vendas_ultimos_12_meses = obterVendasUltimos12Meses($conn, $where_conditions, $query_params);
-        $dados_temporais['vendas_ultimos_12_meses'] = $vendas_ultimos_12_meses;
-
-        // Dados para gráficos - CORRIGIDO: garantir arrays vazios quando não há dados
-        $sql_status = "SELECT 
-                        CASE 
-                            WHEN CodStatusPedido = 20 THEN 'ATRASADO'
-                            WHEN CodStatusPedido = 10 THEN 'NO PRAZO' 
-                            WHEN CodStatusPedido = 30 THEN 'ENTREGUE'
-                            ELSE 'OUTROS'
-                        END as StatusEntrega, 
-                        COUNT(*) as total 
-                      FROM vW_Ind46 $where_sql 
-                      GROUP BY CodStatusPedido";
-        $stmt_status = sqlsrv_query($conn, $sql_status, $query_params);
-        if ($stmt_status !== false) {
-            while ($row = sqlsrv_fetch_array($stmt_status, SQLSRV_FETCH_ASSOC)) {
-                $dados_graficos['status'][$row['StatusEntrega']] = (int)$row['total'];
+        $results_mensal = sqlsrv_query($conn, $sql_mensal);
+        if ($results_mensal) {
+            while ($row = sqlsrv_fetch_array($results_mensal, SQLSRV_FETCH_ASSOC)) {
+                $dados_graficos['vendas_mensais'][$row['mes_ano']] = $row['total'];
             }
+            sqlsrv_free_stmt($results_mensal);
         }
 
-        $sql_top_clientes = "SELECT TOP 10 Cliente, COUNT(*) as total_pedidos FROM vW_Ind46 $where_sql GROUP BY Cliente ORDER BY total_pedidos DESC";
-        $stmt_clientes_top = sqlsrv_query($conn, $sql_top_clientes, $query_params);
-        if ($stmt_clientes_top !== false) {
-            while ($row = sqlsrv_fetch_array($stmt_clientes_top, SQLSRV_FETCH_ASSOC)) {
-                $dados_graficos['top_clientes'][$row['Cliente']] = (int)$row['total_pedidos'];
-            }
-        }
-
-        $sql_top_produtos = "SELECT TOP 10 Produto, COUNT(*) as total_pedidos FROM vW_Ind46 $where_sql GROUP BY Produto ORDER BY total_pedidos DESC";
-        $stmt_produtos_top = sqlsrv_query($conn, $sql_top_produtos, $query_params);
-        if ($stmt_produtos_top !== false) {
-            while ($row = sqlsrv_fetch_array($stmt_produtos_top, SQLSRV_FETCH_ASSOC)) {
-                $dados_graficos['top_produtos'][$row['Produto']] = (int)$row['total_pedidos'];
-            }
-        }
-
-        // Distribuição de dias de atraso
-        $sql_dias = "SELECT 
-                        CASE 
-                            WHEN DATEDIFF(DAY, DtEmissao, DtEntregaVendas) <= 0 THEN 'No Prazo'
-                            WHEN DATEDIFF(DAY, DtEmissao, DtEntregaVendas) BETWEEN 1 AND 7 THEN '1-7 Dias'
-                            WHEN DATEDIFF(DAY, DtEmissao, DtEntregaVendas) BETWEEN 8 AND 15 THEN '8-15 Dias'
-                            WHEN DATEDIFF(DAY, DtEmissao, DtEntregaVendas) BETWEEN 16 AND 30 THEN '16-30 Dias'
-                            WHEN DATEDIFF(DAY, DtEmissao, DtEntregaVendas) > 30 THEN 'Mais de 30 Dias'
-                            ELSE 'Sem Data'
-                        END as faixa_dias,
-                        COUNT(*) as total
-                    FROM vW_Ind46 
-                    $atrasados_where
-                    GROUP BY 
-                        CASE 
-                            WHEN DATEDIFF(DAY, DtEmissao, DtEntregaVendas) <= 0 THEN 'No Prazo'
-                            WHEN DATEDIFF(DAY, DtEmissao, DtEntregaVendas) BETWEEN 1 AND 7 THEN '1-7 Dias'
-                            WHEN DATEDIFF(DAY, DtEmissao, DtEntregaVendas) BETWEEN 8 AND 15 THEN '8-15 Dias'
-                            WHEN DATEDIFF(DAY, DtEmissao, DtEntregaVendas) BETWEEN 16 AND 30 THEN '16-30 Dias'
-                            WHEN DATEDIFF(DAY, DtEmissao, DtEntregaVendas) > 30 THEN 'Mais de 30 Dias'
-                            ELSE 'Sem Data'
-                        END";
+        // 5. Gráfico de Vendas Anuais (Últimos 5 anos) - CONSULTA ALTERNATIVA
+        // Vamos usar uma abordagem diferente para evitar problemas de conversão
+        $sql_anual = "SELECT 
+                     ano,
+                     COUNT(*) as total 
+                     FROM (
+                          SELECT 
+                          CASE 
+                              WHEN ISDATE(DtEmissao) = 1 THEN YEAR(CONVERT(DATETIME, DtEmissao))
+                              ELSE NULL 
+                          END as ano
+                          FROM vW_Ind46_Formatada 
+                          WHERE ISDATE(DtEmissao) = 1
+                          AND CONVERT(DATETIME, DtEmissao) >= DATEADD(YEAR, -5, GETDATE())
+                      ) as dados_validos
+                      WHERE ano IS NOT NULL
+                      GROUP BY ano 
+                      ORDER BY ano";
         
-        if (empty($status_filtro) || $status_filtro === 'ATRASADO') {
-            $stmt_dias = sqlsrv_query($conn, $sql_dias, $atrasados_params);
-            if ($stmt_dias !== false) {
-                while ($row = sqlsrv_fetch_array($stmt_dias, SQLSRV_FETCH_ASSOC)) {
-                    $dados_graficos['dias_atraso'][$row['faixa_dias']] = (int)$row['total'];
-                }
+        $results_anual = sqlsrv_query($conn, $sql_anual);
+        if ($results_anual) {
+            while ($row = sqlsrv_fetch_array($results_anual, SQLSRV_FETCH_ASSOC)) {
+                $dados_graficos['vendas_anuais'][$row['ano']] = $row['total'];
             }
+            sqlsrv_free_stmt($results_anual);
         }
         
-        // Vendas Mensais (últimos 12 meses)
-        $sql_vendas_mensais = "
-        SELECT 
-            YEAR(DtEmissao) as Ano,
-            MONTH(DtEmissao) as Mes,
-            COUNT(*) as TotalPedidos
-        FROM vW_Ind46 
-        WHERE DtEmissao >= DATEADD(MONTH, -12, GETDATE())
-        GROUP BY YEAR(DtEmissao), MONTH(DtEmissao)
-        ORDER BY Ano ASC, Mes ASC
-        ";
-
-        $stmt_mensais = sqlsrv_query($conn, $sql_vendas_mensais);
-        if ($stmt_mensais !== false) {
-            $dados_graficos['vendas_mensais'] = [];
-            while ($row = sqlsrv_fetch_array($stmt_mensais, SQLSRV_FETCH_ASSOC)) {
-                $mes_formatado = $row['Ano'] . '-' . str_pad($row['Mes'], 2, '0', STR_PAD_LEFT);
-                $dados_graficos['vendas_mensais'][$mes_formatado] = (int)$row['TotalPedidos'];
-            }
-        }
-
-        // Vendas Anuais (últimos 5 anos)
-        $sql_vendas_anuais = "
-        SELECT 
-            YEAR(DtEmissao) as Ano,
-            COUNT(*) as TotalPedidos
-        FROM vW_Ind46 
-        WHERE YEAR(DtEmissao) BETWEEN YEAR(GETDATE()) - 4 AND YEAR(GETDATE())
-        GROUP BY YEAR(DtEmissao)
-        ORDER BY Ano ASC
-        ";
-        
-        $stmt_anuais = sqlsrv_query($conn, $sql_vendas_anuais);
-        if ($stmt_anuais !== false) {
-            while ($row = sqlsrv_fetch_array($stmt_anuais, SQLSRV_FETCH_ASSOC)) {
-                $dados_graficos['vendas_anuais'][$row['Ano']] = (int)$row['TotalPedidos'];
-            }
-        }
-
-        // Dados temporais para os cards
-        $sql_mes_atual = "SELECT COUNT(*) as total FROM vW_Ind46 WHERE MONTH(DtEmissao) = MONTH(GETDATE()) AND YEAR(DtEmissao) = YEAR(GETDATE())";
-        $stmt_mes_atual = sqlsrv_query($conn, $sql_mes_atual);
-        if ($stmt_mes_atual !== false) {
-            $row = sqlsrv_fetch_array($stmt_mes_atual, SQLSRV_FETCH_ASSOC);
-            $dados_temporais['vendas_mes_atual'] = $row ? $row['total'] : 0;
-        }
-
-        $sql_ano_atual = "SELECT COUNT(*) as total FROM vW_Ind46 WHERE YEAR(DtEmissao) = YEAR(GETDATE())";
-        $stmt_ano_atual = sqlsrv_query($conn, $sql_ano_atual);
-        if ($stmt_ano_atual !== false) {
-            $row = sqlsrv_fetch_array($stmt_ano_atual, SQLSRV_FETCH_ASSOC);
-            $dados_temporais['vendas_ano_atual'] = $row ? $row['total'] : 0;
-        }
-
-        $sql_melhor_mes = "
-        SELECT TOP 1 
-            YEAR(DtEmissao) as Ano,
-            MONTH(DtEmissao) as Mes,
-            COUNT(*) as Total
-        FROM vW_Ind46 
-        WHERE DtEmissao >= DATEADD(YEAR, -1, GETDATE())
-        GROUP BY YEAR(DtEmissao), MONTH(DtEmissao)
-        ORDER BY Total DESC
-        ";
-        $stmt_melhor_mes = sqlsrv_query($conn, $sql_melhor_mes);
-        if ($stmt_melhor_mes !== false) {
-            $row = sqlsrv_fetch_array($stmt_melhor_mes, SQLSRV_FETCH_ASSOC);
-            if ($row) {
-                $dados_temporais['melhor_mes'] = str_pad($row['Mes'], 2, '0', STR_PAD_LEFT) . '/' . $row['Ano'];
-            }
-        }
-
     } catch (Exception $e) {
-        $error_message = $e->getMessage();
+        $erro = $e->getMessage();
+        $debug_logs[] = "Erro geral: " . $erro;
     }
 }
 ?>
@@ -381,7 +236,6 @@ if ($conn) {
             --primary: #0f172a;
             --secondary: #1e293b;
             --accent: #3b82f6;
-            --accent-glow: rgba(59, 130, 246, 0.5);
             --success: #10b981;
             --warning: #f59e0b;
             --danger: #ef4444;
@@ -390,1009 +244,383 @@ if ($conn) {
             --border: #334155;
             --card-bg: rgba(30, 41, 59, 0.7);
             --glass: rgba(255, 255, 255, 0.05);
-            --transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+
+            /* VARIAVEIS DO BOTÃO DE PERFIL */
+            --accent-color: #00f2fe; /* Cor do ícone do usuário, azul-ciano */
+            --dark-bg: #0f0f23;
+            --header-border: rgba(255, 255, 255, 0.1);
+            --shadow-light: 0 2px 10px rgba(0, 0, 0, 0.2);
+            --glow-color: rgba(0, 242, 254, 0.5);
         }
 
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-
+        * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
             font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
             background: linear-gradient(135deg, var(--primary) 0%, #1e1b4b 100%);
             color: var(--text);
             min-height: 100vh;
-            overflow-x: hidden;
-            cursor: default;
         }
 
-        .bg-animation {
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            z-index: -1;
-            opacity: 0.3;
-        }
-
-        .particle {
-            position: absolute;
-            border-radius: 50%;
-            background: var(--accent-glow);
-            animation: float 15s infinite linear;
-        }
-
-        @keyframes float {
-            0% { transform: translateY(0) translateX(0); opacity: 0; }
-            10% { opacity: 1; }
-            90% { opacity: 1; }
-            100% { transform: translateY(-100vh) translateX(100px); opacity: 0; }
-        }
-
-        .container {
-            max-width: 1800px;
-            margin: 0 auto;
-            padding: 20px;
-            position: relative;
-            z-index: 1;
-        }
-
+        .container { max-width: 95%; margin: 0 auto; padding: 20px; }
+        
         .header {
-            background: var(--card-bg);
+            background: var(--card-bg); 
             backdrop-filter: blur(10px);
-            border: 1px solid var(--glass);
+            border: 1px solid var(--glass); 
             border-radius: 20px;
-            padding: 30px 0;
+            padding: 30px 40px; 
             margin-bottom: 30px;
-            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
             position: relative;
-            overflow: hidden;
         }
-
-        .header::before {
-            content: '';
-            position: absolute;
-            top: 0;
-            left: 0;
-            right: 0;
-            height: 3px;
-            background: linear-gradient(90deg, var(--accent), var(--success), var(--warning), var(--danger));
-        }
-
+        
         .header-content {
             display: flex;
-            align-items: center;
+            align-items: flex-start; /* Alinha o topo dos elementos */
             justify-content: space-between;
-            padding: 0 40px;
+            width: 100%;
         }
-
+        
         .logo {
             display: flex;
             align-items: center;
             gap: 15px;
         }
-
+        
         .logo-icon {
             font-size: 2.5em;
             color: var(--accent);
-            filter: drop-shadow(0 0 10px var(--accent-glow));
         }
-
-        .header-text h1 {
-            font-size: 2.5em;
+        
+        .header h1 {
+            font-size: 2.5em; 
             font-weight: 700;
             background: linear-gradient(90deg, var(--text), var(--accent));
-            -webkit-background-clip: text;
+            -webkit-background-clip: text; 
             -webkit-text-fill-color: transparent;
-            margin-bottom: 5px;
+        }
+        
+        /* NOVO CONTAINER PARA OS BOTÕES: Empilha Perfil e Voltar verticalmente */
+        .user-actions {
+            display: flex;
+            flex-direction: column; /* Empilha verticalmente */
+            align-items: flex-end; /* Alinha tudo à direita */
+            gap: 10px; /* Espaçamento entre os botões */
         }
 
-        .header-text p {
-            color: var(--text-muted);
-            font-size: 1.1em;
+        /* ESTILOS DO BOTÃO DE PERFIL */
+        .user-profile {
+            display: flex;
+            align-items: center;
+            padding: 8px 15px;
+            border-radius: 10px;
+            transition: all 0.3s ease;
+            cursor: pointer;
+            position: relative;
+            background: rgba(15, 15, 35, 0.5);
+            border: 1px solid var(--header-border);
+            backdrop-filter: blur(10px);
+            box-shadow: var(--shadow-light);
         }
+
+        .user-profile:hover {
+            background-color: rgba(255, 255, 255, 0.1);
+        }
+
+        .avatar {
+            position: relative;
+            margin-right: 12px;
+        }
+
+        .avatar i {
+            font-size: 36px;
+            color: var(--accent-color); /* Azul Ciano */
+            filter: drop-shadow(0 0 5px var(--glow-color)); /* Efeito de brilho */
+        }
+
+        .avatar::after {
+            content: '';
+            position: absolute;
+            bottom: 2px;
+            right: 2px;
+            width: 10px;
+            height: 10px;
+            background: #00ff00; /* Ponto verde de status */
+            border-radius: 50%;
+            border: 2px solid var(--dark-bg);
+        }
+
+        .user-name {
+            font-size: 16px;
+            font-weight: 600;
+            background: linear-gradient(to right, #ffffff, var(--accent-color));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        
+        /* ESTILOS DO BOTÃO VOLTAR */
+        .back-button-below {
+            background: linear-gradient(135deg, var(--secondary) 0%, #475569 100%);
+            color: white;
+            border: 1px solid var(--glass);
+            border-radius: 50px;
+            padding: 10px 18px;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
+            backdrop-filter: blur(10px);
+            text-decoration: none;
+            position: relative; /* Não precisa de posicionamento absoluto, o .user-actions gerencia */
+        }
+
+        .back-button-below:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3);
+            background: linear-gradient(135deg, var(--accent) 0%, #1d4ed8 100%);
+        }
+
+        /* Estilos de interface existentes */
+        .error {
+            background: var(--danger); color: white; padding: 15px; border-radius: 8px; margin-bottom: 15px;
+        }
+        .debug-logs { 
+            background: #1c2630; color: var(--text-muted); padding: 15px; border-radius: 8px; margin-bottom: 15px; font-size: 12px; max-height: 300px; overflow-y: auto; border: 1px solid var(--border); 
+        }
+        .debug-logs h4 { color: var(--accent); margin-bottom: 10px; }
 
         .filtros {
-            background: var(--card-bg);
-            backdrop-filter: blur(10px);
-            border: 1px solid var(--glass);
-            border-radius: 16px;
-            padding: 25px;
-            margin-bottom: 30px;
-            box-shadow: 0 8px 25px rgba(0, 0, 0, 0.2);
-            display: flex;
-            gap: 20px;
-            align-items: end;
-            flex-wrap: wrap;
-            transition: var(--transition);
+            background: var(--card-bg); backdrop-filter: blur(10px);
+            border: 1px solid var(--glass); border-radius: 16px;
+            padding: 25px; margin-bottom: 30px;
+            display: flex; gap: 20px; align-items: flex-end; flex-wrap: wrap;
         }
-
-        .filtros:hover {
-            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
-        }
-
-        .form-group {
-            display: flex;
-            flex-direction: column;
-            gap: 8px;
-            flex: 1;
-            min-width: 180px;
-        }
-
-        .form-group label {
-            font-weight: 600;
-            color: var(--text);
-            font-size: 0.9em;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }
-
+        .form-group { display: flex; flex-direction: column; gap: 8px; flex: 1; min-width: 180px; }
         .form-group input, .form-group select {
-            padding: 12px 15px;
-            background: rgba(15, 23, 42, 0.7);
-            border: 1px solid var(--border);
-            border-radius: 10px;
-            font-size: 14px;
-            color: var(--text);
-            transition: var(--transition);
-            cursor: pointer;
+            padding: 12px 15px; background: rgba(15, 23, 42, 0.7);
+            border: 1px solid var(--border); border-radius: 10px;
+            font-size: 14px; color: var(--text);
         }
-
-        .form-group input:focus, .form-group select:focus {
-            outline: none;
-            border-color: var(--accent);
-            box-shadow: 0 0 0 3px var(--accent-glow);
-        }
-
         .btn {
-            background: linear-gradient(135deg, var(--accent) 0%, #1d4ed8 100%);
-            color: white;
-            border: none;
-            padding: 12px 25px;
-            border-radius: 10px;
-            cursor: pointer;
-            font-size: 14px;
-            font-weight: 600;
-            transition: var(--transition);
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            box-shadow: 0 4px 15px rgba(59, 130, 246, 0.3);
+            background: linear-gradient(135deg, var(--accent) 0%, #1d4ed8 100%); color: white;
+            border: none; padding: 12px 25px; border-radius: 10px; cursor: pointer;
+            font-size: 14px; font-weight: 600; transition: all 0.2s;
+            display: flex; align-items: center; gap: 8px; /* Adicionado para centralizar ícone e texto do botão de filtro */
         }
+        .btn:hover { transform: translateY(-1px); }
+        .btn-secondary { background: linear-gradient(135deg, var(--secondary) 0%, #475569 100%); }
 
-        .btn:hover {
-            transform: translateY(-3px);
-            box-shadow: 0 6px 20px rgba(59, 130, 246, 0.5);
-        }
-
-        .btn-secondary {
-            background: linear-gradient(135deg, var(--secondary) 0%, #475569 100%);
-            box-shadow: 0 4px 15px rgba(71, 85, 105, 0.3);
-        }
-
-        .btn-secondary:hover {
-            box-shadow: 0 6px 20px rgba(71, 85, 105, 0.5);
-        }
-
-        .stats-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-            gap: 20px;
-            margin-bottom: 30px;
-        }
-
+        .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 20px; margin-bottom: 30px; }
         .stat-card {
-            background: var(--card-bg);
-            backdrop-filter: blur(10px);
-            border: 1px solid var(--glass);
-            border-radius: 16px;
-            padding: 25px;
-            text-align: center;
-            transition: var(--transition);
-            position: relative;
-            overflow: hidden;
-            box-shadow: 0 8px 25px rgba(0, 0, 0, 0.2);
+            background: var(--card-bg); border: 1px solid var(--glass); border-radius: 16px;
+            padding: 25px; text-align: center;
         }
-
-        .stat-card:hover {
-            transform: translateY(-5px);
-            box-shadow: 0 12px 30px rgba(0, 0, 0, 0.3);
-        }
-
-        .stat-card::before {
-            content: '';
-            position: absolute;
-            top: 0;
-            left: 0;
-            right: 0;
-            height: 4px;
-            background: linear-gradient(90deg, var(--accent), var(--success));
-        }
-
-        .stat-icon {
-            font-size: 2.5em;
-            margin-bottom: 15px;
-            opacity: 0.8;
-        }
-
+        .stat-icon { font-size: 2.5em; margin-bottom: 15px; opacity: 0.8; }
         .stat-number {
-            font-size: 2.8em;
-            font-weight: 800;
-            margin-bottom: 10px;
+            font-size: 2.8em; font-weight: 800; margin-bottom: 10px;
             background: linear-gradient(90deg, var(--text), var(--accent));
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
+            -webkit-background-clip: text; -webkit-text-fill-color: transparent;
         }
 
-        .stat-label {
-            color: var(--text-muted);
-            font-size: 0.9em;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-        }
-
-        .dashboard {
-            display: grid;
-            grid-template-columns: repeat(2, 1fr);
-            gap: 25px;
-            margin-bottom: 30px;
-        }
-
+        .dashboard { display: grid; grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)); gap: 25px; margin-bottom: 30px; }
         .card {
-            background: var(--card-bg);
-            backdrop-filter: blur(10px);
-            border: 1px solid var(--glass);
-            border-radius: 16px;
-            padding: 25px;
-            box-shadow: 0 8px 25px rgba(0, 0, 0, 0.2);
-            transition: var(--transition);
+            background: var(--card-bg); backdrop-filter: blur(10px);
+            border: 1px solid var(--glass); border-radius: 16px;
+            padding: 25px; box-shadow: 0 8px 25px rgba(0, 0, 0, 0.2);
         }
+        .card h3 { margin-bottom: 20px; font-size: 1.3em; display: flex; align-items: center; gap: 10px; }
+        .chart-wrapper { position: relative; height: 350px; width: 100%; }
+        .no-data { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; color: var(--text-muted); text-align: center; }
+        .no-data i { font-size: 3em; margin-bottom: 15px; opacity: 0.5; }
 
-        .card:hover {
-            box-shadow: 0 12px 30px rgba(0, 0, 0, 0.3);
-        }
-
-        .card h3 {
-            margin-bottom: 20px;
-            color: var(--text);
-            font-size: 1.3em;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            padding-bottom: 10px;
-            border-bottom: 1px solid var(--border);
-        }
-
-        /* ESTILOS OTIMIZADOS PARA GRÁFICOS */
-        .chart-wrapper {
-            position: relative;
-            height: 350px;
-            width: 100%;
-            margin: 0 auto;
-        }
-
-        .chart-container {
-            position: relative;
-            height: 100%;
-            width: 100%;
-        }
-
-        .chart-placeholder {
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            height: 100%;
-            color: var(--text-muted);
-            text-align: center;
-            padding: 20px;
-        }
-
-        .chart-placeholder i {
-            font-size: 3em;
-            margin-bottom: 15px;
-            opacity: 0.5;
-        }
-
-        .chart-toolbar {
-            display: flex;
-            justify-content: flex-end;
-            gap: 10px;
-            margin-bottom: 15px;
-        }
-
-        .chart-btn {
-            background: rgba(15, 23, 42, 0.7);
-            border: 1px solid var(--border);
-            color: var(--text);
-            padding: 6px 12px;
-            border-radius: 6px;
-            cursor: pointer;
-            font-size: 0.8em;
-            transition: var(--transition);
-        }
-
-        .chart-btn:hover {
-            background: var(--accent);
-            border-color: var(--accent);
-        }
-
-        .tabela-section {
-            margin-top: 40px;
-        }
-
-        .tabela-card {
-            background: var(--card-bg);
-            backdrop-filter: blur(10px);
-            border: 1px solid var(--glass);
-            border-radius: 16px;
-            margin-bottom: 25px;
-            overflow: hidden;
-            box-shadow: 0 8px 25px rgba(0, 0, 0, 0.2);
-        }
-
+        .tabela-container { background: var(--card-bg); border: 1px solid var(--glass); border-radius: 16px; overflow: hidden; margin-bottom: 30px; }
         .tabela-header {
             background: linear-gradient(135deg, var(--secondary) 0%, var(--primary) 100%);
-            padding: 20px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            border-bottom: 1px solid var(--border);
+            padding: 20px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 15px;
         }
-
-        .tabela-header h3 {
-            margin: 0;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
-
-        .tabela-content {
-            padding: 0;
-            max-height: 600px;
-            overflow: auto;
-            cursor: default;
-        }
-
-        /* REMOVER CURSOR DA TABELA */
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            font-size: 11px;
-            cursor: default;
-        }
-
-        th, td {
-            padding: 12px 15px;
-            text-align: left;
-            border-bottom: 1px solid var(--border);
-            white-space: nowrap;
-            cursor: default;
-        }
-
-        th {
-            background: rgba(15, 23, 42, 0.7);
-            font-weight: 600;
-            color: var(--text);
-            position: sticky;
-            top: 0;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-            font-size: 0.85em;
-            cursor: default;
-        }
-
-        tr {
-            transition: var(--transition);
-            cursor: default;
-        }
-
-        tr:hover {
-            background: rgba(59, 130, 246, 0.1);
-        }
-
-        .status-atrasado {
-            color: var(--danger);
-            font-weight: bold;
-            position: relative;
-            padding-left: 15px;
-        }
-
-        .status-atrasado::before {
-            content: '';
-            position: absolute;
-            left: 0;
-            top: 50%;
-            transform: translateY(-50%);
-            width: 8px;
-            height: 8px;
-            border-radius: 50%;
-            background: var(--danger);
-        }
-
-        .status-prazo {
-            color: var(--success);
-            font-weight: bold;
-            position: relative;
-            padding-left: 15px;
-        }
-
-        .status-prazo::before {
-            content: '';
-            position: absolute;
-            left: 0;
-            top: 50%;
-            transform: translateY(-50%);
-            width: 8px;
-            height: 8px;
-            border-radius: 50%;
-            background: var(--success);
-        }
-
-        .loading {
-            text-align: center;
-            padding: 50px;
-            color: var(--text-muted);
-        }
-
-        .error {
-            text-align: center;
-            padding: 20px;
-            color: var(--danger);
-            background: rgba(239, 68, 68, 0.1);
-            border-radius: 10px;
-            margin: 10px 0;
-            border-left: 4px solid var(--danger);
-        }
-
-        .export-buttons {
-            display: flex;
-            gap: 10px;
-            margin-left: auto;
-        }
-
-        .info-total {
-            background: rgba(59, 130, 246, 0.1);
-            padding: 15px;
-            text-align: center;
-            color: var(--accent);
-            font-weight: 600;
-            border-bottom: 1px solid var(--border);
-            cursor: default;
-        }
-
-        .search-container {
-            padding: 15px 20px;
-            border-bottom: 1px solid var(--border);
-            display: flex;
-            gap: 10px;
-        }
-
-        .search-input {
-            flex: 1;
-            padding: 10px 15px;
-            background: rgba(15, 23, 42, 0.7);
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            color: var(--text);
-            transition: var(--transition);
-            cursor: text;
-        }
-
-        .search-input:focus {
-            outline: none;
-            border-color: var(--accent);
-            box-shadow: 0 0 0 2px var(--accent-glow);
-        }
-
-        @media (max-width: 1200px) {
-            .dashboard {
-                grid-template-columns: 1fr;
-            }
-        }
-
-        @media (max-width: 768px) {
-            .filtros {
-                flex-direction: column;
-            }
-            
-            .form-group {
-                width: 100%;
-            }
-            
-            table {
-                font-size: 10px;
-            }
-            
-            th, td {
-                padding: 8px 10px;
-            }
-
-            .header-content {
-                flex-direction: column;
-                text-align: center;
-                gap: 20px;
-            }
-
-            .chart-wrapper {
-                height: 300px;
-            }
-        }
-
-        /* Animações de entrada otimizadas */
-        @keyframes fadeInUp {
-            from {
-                opacity: 0;
-                transform: translateY(30px);
-            }
-            to {
-                opacity: 1;
-                transform: translateY(0);
-            }
-        }
-
-        .fade-in {
-            animation: fadeInUp 0.6s ease-out forwards;
-        }
-
-        .delay-1 { animation-delay: 0.1s; opacity: 0; }
-        .delay-2 { animation-delay: 0.2s; opacity: 0; }
-        .delay-3 { animation-delay: 0.3s; opacity: 0; }
-        .delay-4 { animation-delay: 0.4s; opacity: 0; }
-        
-        .periodo-active {
-            border-color: var(--accent) !important;
-            box-shadow: 0 0 0 2px var(--accent-glow) !important;
-        }
-
-        /* Animações otimizadas para gráficos */
-        @keyframes chartFadeIn {
-            from {
-                opacity: 0;
-                transform: translateY(20px);
-            }
-            to {
-                opacity: 1;
-                transform: translateY(0);
-            }
-        }
-
-        .chart-fade-in {
-            animation: chartFadeIn 0.5s ease-out;
-        }
-
-        /* Otimização de performance para gráficos */
-        canvas {
-            display: block;
-            will-change: transform;
-        }
+        .tabela-content { overflow-x: auto; max-height: 70vh; }
+        table { width: 100%; border-collapse: collapse; font-size: 12px; }
+        th, td { padding: 12px 15px; text-align: left; border-bottom: 1px solid var(--border); white-space: nowrap; }
+        th { background: rgba(15, 23, 42, 0.7); font-weight: 600; position: sticky; top: 0; }
+        tr:hover { background: rgba(59, 130, 246, 0.1); }
     </style>
 </head>
 <body>
-    <div class="bg-animation" id="bgAnimation"></div>
-
-    <div class="header">
-        <div class="container">
+    <div class="container">
+        <div class="header">
             <div class="header-content">
                 <div class="logo">
-                    <div class="logo-icon">
-                        <i class="fas fa-chart-network"></i>
-                    </div>
-                    <div class="header-text">
+                    <div class="logo-icon"><i class="fas fa-chart-network"></i></div>
+                    <div>
                         <h1>INDICADORES 46 - EMBAQUIM</h1>
-                        <p>EMBAQUIM - Análise de Performance Completa</p>
+                        <p>Análise de Performance de Pedidos</p>
                     </div>
                 </div>
-                <div class="system-status">
-                    <div class="btn">
-                        <a href="dashboard.php" style="color: white; text-decoration: none;">
-                            <i class="fas fa-arrow-left"></i> Voltar
-                        </a>
+                
+                <div class="user-actions">
+                    <div class="user-profile">
+                        <div class="avatar">
+                            <i class="fas fa-user-circle"></i> 
+                        </div>
+                        <span class="user-name"><?php echo htmlspecialchars($usuario_nome); ?></span>
                     </div>
+
+                    <a href="dashboard.php" class="back-button-below">
+                        <i class="fas fa-arrow-left"></i> Voltar
+                    </a>
                 </div>
             </div>
         </div>
-    </div>
 
-    <div class="container">
-        <form method="POST" class="filtros fade-in">
+        <?php if (!empty($erro)): ?>
+            <div class="error">
+                <strong>🚨 Erro:</strong><br>
+                <?php echo nl2br(htmlspecialchars($erro)); ?>
+            </div>
+        <?php endif; ?>
+
+        <?php if ($show_debug_html && !empty($debug_logs)): ?>
+            <div class="debug-logs">
+                <h4>📋 Logs de Debug:</h4>
+                <?php foreach ($debug_logs as $log): ?>
+                    <div><?php echo htmlspecialchars($log); ?></div>
+                <?php endforeach; ?>
+            </div>
+        <?php endif; ?>
+
+        <form method="POST" class="filtros">
             <div class="form-group">
                 <label for="data_inicio"><i class="fas fa-calendar-alt"></i> Data Início:</label>
-                <input type="date" id="data_inicio" name="data_inicio" value="<?= htmlspecialchars($data_inicio) ?>">
+                <input type="date" id="data_inicio" name="data_inicio" value="<?php echo htmlspecialchars($data_inicio); ?>">
             </div>
             
             <div class="form-group">
                 <label for="data_fim"><i class="fas fa-calendar-check"></i> Data Fim:</label>
-                <input type="date" id="data_fim" name="data_fim" value="<?= htmlspecialchars($data_fim) ?>">
-            </div>
-            
-            <div class="form-group">
-                <label for="periodo"><i class="fas fa-calendar-week"></i> Período Rápido:</label>
-                <select id="periodo" name="periodo">
-                    <option value="">Selecionar...</option>
-                    <option value="hoje" <?= $periodo == 'hoje' ? 'selected' : '' ?>>Hoje</option>
-                    <option value="ontem" <?= $periodo == 'ontem' ? 'selected' : '' ?>>Ontem</option>
-                    <option value="semana_atual" <?= $periodo == 'semana_atual' ? 'selected' : '' ?>>Esta Semana</option>
-                    <option value="semana_anterior" <?= $periodo == 'semana_anterior' ? 'selected' : '' ?>>Semana Anterior</option>
-                    <option value="mes_atual" <?= $periodo == 'mes_atual' ? 'selected' : '' ?>>Este Mês</option>
-                    <option value="mes_anterior" <?= $periodo == 'mes_anterior' ? 'selected' : '' ?>>Mês Anterior</option>
-                    <option value="trimestre_atual" <?= $periodo == 'trimestre_atual' ? 'selected' : '' ?>>Este Trimestre</option>
-                    <option value="ano_atual" <?= $periodo == 'ano_atual' ? 'selected' : '' ?>>Este Ano</option>
-                    <option value="ano_anterior" <?= $periodo == 'ano_anterior' ? 'selected' : '' ?>>Ano Anterior</option>
-                </select>
-            </div>
-
-            <div class="form-group">
-                <label for="mes_ano"><i class="fas fa-calendar-month"></i> Mês/Ano:</label>
-                <select id="mes_ano" name="mes_ano">
-                    <option value="">Todos os meses</option>
-                    <?php
-                    for ($i = 0; $i < 24; $i++) {
-                        $mes_ano_value = date('Y-m', strtotime("-$i months"));
-                        $mes_nome = date('m/Y', strtotime($mes_ano_value));
-                        $selected = $mes_ano_value == $mes_ano ? 'selected' : '';
-                        echo "<option value='$mes_ano_value' $selected>$mes_nome</option>";
-                    }
-                    ?>
-                </select>
-            </div>
-
-            <div class="form-group">
-                <label for="ano"><i class="fas fa-calendar-star"></i> Ano:</label>
-                <select id="ano" name="ano">
-                    <option value="">Todos os anos</option>
-                    <?php
-                    for ($i = 0; $i < 5; $i++) {
-                        $ano_opcao = date('Y') - $i;
-                        $selected = $ano_opcao == $ano ? 'selected' : '';
-                        echo "<option value='$ano_opcao' $selected>$ano_opcao</option>";
-                    }
-                    ?>
-                </select>
+                <input type="date" id="data_fim" name="data_fim" value="<?php echo htmlspecialchars($data_fim); ?>">
             </div>
             
             <div class="form-group">
                 <label for="status_filtro"><i class="fas fa-filter"></i> Status:</label>
                 <select id="status_filtro" name="status_filtro">
                     <option value="">Todos</option>
-                    <option value="ATRASADO" <?= $status_filtro == 'ATRASADO' ? 'selected' : '' ?>>Atrasado</option>
-                    <option value="ENTREGUE" <?= $status_filtro == 'ENTREGUE' ? 'selected' : '' ?>>Entregue</option>
-                    <option value="NO PRAZO" <?= $status_filtro == 'NO PRAZO' ? 'selected' : '' ?>>No Prazo</option>
+                    <option value="ATRASADO" <?php echo $status_filtro == 'ATRASADO' ? 'selected' : ''; ?>>Atrasado</option>
+                    <option value="NA DATA" <?php echo $status_filtro == 'NA DATA' ? 'selected' : ''; ?>>Na Data</option>
+                    <option value="ADIANTADO" <?php echo $status_filtro == 'ADIANTADO' ? 'selected' : ''; ?>>Adiantado</option>
                 </select>
             </div>
             
-            <button type="submit" class="btn"><i class="fas fa-sliders-h"></i> Aplicar Filtros</button>
-            <a href="?" class="btn btn-secondary"><i class="fas fa-broom"></i> Limpar Filtros</a>
+            <!-- BOTÕES APLICAR FILTROS E LIMPAR - ADICIONADO IGUAL AO INDICADORES45.PHP -->
+            <div style="display: flex; gap: 10px;">
+                <button type="submit" class="btn"><i class="fas fa-sliders-h"></i> Aplicar Filtros</button>
+                <a href="?" class="btn btn-secondary"><i class="fas fa-broom"></i> Limpar</a>
+            </div>
         </form>
 
-        <?php if ($conn): ?>
-            <?php if (isset($error_message)): ?>
-                <div class='error fade-in'><i class='fas fa-exclamation-triangle'></i> Erro: <?= htmlspecialchars($error_message) ?></div>
-            <?php endif; ?>
-
+        <?php if ($conn && empty($erro)): ?>
             <div class="stats-grid">
-                <div class="stat-card fade-in delay-1">
-                    <div class="stat-icon"><i class="fas fa-file-invoice"></i></div>
-                    <div class="stat-number"><?= number_format($total_pedidos, 0, ',', '.') ?></div>
-                    <div class="stat-label">Total de Pedidos</div>
+                <div class="stat-card">
+                    <div class="stat-icon"><i class="fas fa-file-invoice" style="color: var(--accent);"></i></div>
+                    <div class="stat-number"><?= number_format($total_registros, 0, ',', '.') ?></div>
+                    <div class="stat-label">Total de Registros</div>
                 </div>
 
-                <div class="stat-card fade-in delay-2">
-                    <div class="stat-icon"><i class="fas fa-clock"></i></div>
+                <?php 
+                    $atrasados = $dados_graficos['status']['ATRASADO'] ?? 0;
+                    $na_data = $dados_graficos['status']['NA DATA'] ?? 0;
+                    $adiantado = $dados_graficos['status']['ADIANTADO'] ?? 0;
+                    $total_status = $atrasados + $na_data + $adiantado;
+                    $percent_atraso = $total_status > 0 ? ($atrasados / $total_status) * 100 : 0;
+                ?>
+                <div class="stat-card">
+                    <div class="stat-icon"><i class="fas fa-clock" style="color: var(--danger);"></i></div>
                     <div class="stat-number"><?= number_format($atrasados, 0, ',', '.') ?></div>
-                    <div class="stat-label">Pedidos Atrasados</div>
+                    <div class="stat-label">Pedidos Atrasados (<?= number_format($percent_atraso, 1, ',', '.') ?>%)</div>
                 </div>
 
-                <div class="stat-card fade-in delay-3">
-                    <div class="stat-icon"><i class="fas fa-calendar-check"></i></div>
-                    <div class="stat-number"><?= number_format($dados_temporais['vendas_mes_atual'], 0, ',', '.') ?></div>
-                    <div class="stat-label">Vendas Este Mês</div>
-                </div>
-
-                <div class="stat-card fade-in delay-4">
-                    <div class="stat-icon"><i class="fas fa-calendar-star"></i></div>
-                    <div class="stat-number"><?= number_format($dados_temporais['vendas_ano_atual'], 0, ',', '.') ?></div>
-                    <div class="stat-label">Vendas Este Ano</div>
-                </div>
-
-                <div class="stat-card fade-in delay-1">
-                    <div class="stat-icon"><i class="fas fa-chart-line"></i></div>
-                    <div class="stat-number"><?= number_format($vendas_ultimos_12_meses, 0, ',', '.') ?></div>
-                    <div class="stat-label">Vendas Últimos 12 Meses</div>
-                </div>
-
-                <div class="stat-card fade-in delay-2">
-                    <div class="stat-icon"><i class="fas fa-users"></i></div>
-                    <div class="stat-number"><?= number_format($total_clientes, 0, ',', '.') ?></div>
-                    <div class="stat-label">Clientes Únicos</div>
-                </div>
-
-                <div class="stat-card fade-in delay-3">
-                    <div class="stat-icon"><i class="fas fa-boxes"></i></div>
-                    <div class="stat-number"><?= number_format($total_produtos, 0, ',', '.') ?></div>
-                    <div class="stat-label">Produtos Diferentes</div>
-                </div>
-
-                <div class="stat-card fade-in delay-4">
-                    <div class="stat-icon"><i class="fas fa-trophy"></i></div>
-                    <div class="stat-number"><?= htmlspecialchars($dados_temporais['melhor_mes']) ?></div>
-                    <div class="stat-label">Melhor Mês</div>
+                <div class="stat-card">
+                    <div class="stat-icon"><i class="fas fa-check-circle" style="color: var(--success);"></i></div>
+                    <div class="stat-number"><?= number_format($na_data + $adiantado, 0, ',', '.') ?></div>
+                    <div class="stat-label">Pedidos no Prazo/Adiantados</div>
                 </div>
             </div>
 
             <div class="dashboard">
-                <!-- Gráfico 1: Status dos Pedidos -->
-                <div class="card fade-in delay-1">
-                    <div class="chart-toolbar">
-                        <button class="chart-btn" onclick="downloadChart('chartStatus')">
-                            <i class="fas fa-download"></i> PNG
-                        </button>
-                    </div>
-                    <h3><i class="fas fa-chart-pie"></i> Status dos Pedidos</h3>
+                <div class="card">
+                    <h3><i class="fas fa-chart-pie"></i> Distribuição de Status</h3>
                     <div class="chart-wrapper">
-                        <div class="chart-container">
+                        <?php if (!empty($dados_graficos['status'])): ?>
                             <canvas id="chartStatus"></canvas>
-                        </div>
+                        <?php else: ?>
+                            <div class="no-data">
+                                <i class="fas fa-chart-pie"></i>
+                                <p>Nenhum dado disponível para o gráfico de status.</p>
+                            </div>
+                        <?php endif; ?>
                     </div>
                 </div>
 
-                <!-- Gráfico 2: Top 10 Clientes -->
-                <div class="card fade-in delay-2">
-                    <div class="chart-toolbar">
-                        <button class="chart-btn" onclick="downloadChart('chartClientes')">
-                            <i class="fas fa-download"></i> PNG
-                        </button>
-                    </div>
+                <div class="card">
                     <h3><i class="fas fa-user-chart"></i> Top 10 Clientes</h3>
                     <div class="chart-wrapper">
-                        <div class="chart-container">
+                        <?php if (!empty($dados_graficos['top_clientes'])): ?>
                             <canvas id="chartClientes"></canvas>
-                        </div>
+                        <?php else: ?>
+                            <div class="no-data">
+                                <i class="fas fa-user-chart"></i>
+                                <p>Nenhum dado disponível para o gráfico de clientes.</p>
+                            </div>
+                        <?php endif; ?>
                     </div>
                 </div>
 
-                <!-- Gráfico 3: Top 10 Produtos -->
-                <div class="card fade-in delay-3">
-                    <div class="chart-toolbar">
-                        <button class="chart-btn" onclick="downloadChart('chartProdutos')">
-                            <i class="fas fa-download"></i> PNG
-                        </button>
-                    </div>
+                <div class="card">
                     <h3><i class="fas fa-chart-bar"></i> Top 10 Produtos</h3>
                     <div class="chart-wrapper">
-                        <div class="chart-container">
+                        <?php if (!empty($dados_graficos['top_produtos'])): ?>
                             <canvas id="chartProdutos"></canvas>
-                        </div>
+                        <?php else: ?>
+                            <div class="no-data">
+                                <i class="fas fa-chart-bar"></i>
+                                <p>Nenhum dado disponível para o gráfico de produtos.</p>
+                            </div>
+                        <?php endif; ?>
                     </div>
                 </div>
 
-                <!-- Gráfico 4: Distribuição de Atrasos -->
-                <div class="card fade-in delay-4">
-                    <div class="chart-toolbar">
-                        <button class="chart-btn" onclick="downloadChart('chartAtrasos')">
-                            <i class="fas fa-download"></i> PNG
-                        </button>
-                    </div>
-                    <h3><i class="fas fa-hourglass-half"></i> Distribuição de Atrasos</h3>
+                <div class="card">
+                    <h3><i class="fas fa-chart-line"></i> Vendas Mensais (12 meses)</h3>
                     <div class="chart-wrapper">
-                        <div class="chart-container">
-                            <canvas id="chartAtrasos"></canvas>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Gráfico 5: Vendas Mensais -->
-                <div class="card fade-in delay-1">
-                    <div class="chart-toolbar">
-                        <button class="chart-btn" onclick="downloadChart('chartVendasMensais')">
-                            <i class="fas fa-download"></i> PNG
-                        </button>
-                    </div>
-                    <h3><i class="fas fa-chart-line"></i> Vendas Mensais (Últimos 12 Meses)</h3>
-                    <div class="chart-wrapper">
-                        <div class="chart-container">
+                        <?php if (!empty($dados_graficos['vendas_mensais'])): ?>
                             <canvas id="chartVendasMensais"></canvas>
-                        </div>
+                        <?php else: ?>
+                            <div class="no-data">
+                                <i class="fas fa-chart-line"></i>
+                                <p>Nenhum dado disponível para o gráfico mensal.</p>
+                            </div>
+                        <?php endif; ?>
                     </div>
                 </div>
 
-                <!-- Gráfico 6: Vendas Anuais -->
-                <div class="card fade-in delay-2">
-                    <div class="chart-toolbar">
-                        <button class="chart-btn" onclick="downloadChart('chartVendasAnuais')">
-                            <i class="fas fa-download"></i> PNG
-                        </button>
-                    </div>
-                    <h3><i class="fas fa-chart-bar"></i> Vendas Anuais (Últimos 5 Anos)</h3>
+                <div class="card">
+                    <h3><i class="fas fa-calendar-alt"></i> Vendas Anuais</h3>
                     <div class="chart-wrapper">
-                        <div class="chart-container">
+                        <?php if (!empty($dados_graficos['vendas_anuais'])): ?>
                             <canvas id="chartVendasAnuais"></canvas>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <div class="tabela-section">
-                <div class="tabela-card fade-in">
-                    <div class="tabela-header">
-                        <h3><i class="fas fa-table"></i> EMBAQUIM - Todos os Pedidos (<?= number_format($total_pedidos, 0, ',', '.') ?> registros)</h3>
-                        <div class="export-buttons">
-                            <button class="btn" onclick="exportarParaExcel()"><i class="fas fa-file-excel"></i> Exportar Excel</button>
-                        </div>
-                    </div>
-                    
-                    <div class="search-container">
-                        <input type="text" class="search-input" id="searchInput" placeholder="Buscar em todos os campos...">
-                        <button class="btn" onclick="clearSearch()"><i class="fas fa-times"></i> Limpar</button>
-                    </div>
-                    
-                    <div class="tabela-content">
-                        <?php
-                        try {
-                            $sql46 = "SELECT * FROM vW_Ind46 $where_sql ORDER BY CodPedido DESC";
-                            $stmt46 = sqlsrv_query($conn, $sql46, $query_params);
-                            
-                            if ($stmt46 === false) {
-                                throw new Exception("Erro na consulta principal: " . print_r(sqlsrv_errors(), true));
-                            }
-                            
-                            if ($stmt46):
-                        ?>
-                        <div class="info-total">
-                            <i class="fas fa-chart-line"></i> Exibindo todos os <?= number_format($total_pedidos, 0, ',', '.') ?> registros
-                        </div>
-                        <table id="tabela46">
-                            <thead>
-                                <tr>
-                                    <th>CodPedido</th>
-                                    <th>Pedido</th>
-                                    <th>Item</th>
-                                    <th>Produto</th>
-                                    <th>Cliente</th>
-                                    <th>DtEmissao</th>
-                                    <th>DtEntregaVendas</th>
-                                    <th>DtFCP</th>
-                                    <th>DtLiberacaoPCP</th>
-                                    <th>Qtidade</th>
-                                    <th>Qt pend</th>
-                                    <th>CodStatusPedido</th>
-                                    <th>CodEmpresa</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                <?php while ($row = sqlsrv_fetch_array($stmt46, SQLSRV_FETCH_ASSOC)): ?>
-                                <tr>
-                                    <td><?= htmlspecialchars($row['CodPedido'] ?? '') ?></td>
-                                    <td><?= htmlspecialchars($row['Pedido'] ?? '') ?></td>
-                                    <td><?= htmlspecialchars($row['Item'] ?? '') ?></td>
-                                    <td title="<?= htmlspecialchars($row['Produto'] ?? '') ?>">
-                                        <?= isset($row['Produto']) ? (strlen($row['Produto']) > 20 ? substr($row['Produto'], 0, 20) . '...' : $row['Produto']) : '' ?>
-                                    </td>
-                                    <td title="<?= htmlspecialchars($row['Cliente'] ?? '') ?>">
-                                        <?= isset($row['Cliente']) ? (strlen($row['Cliente']) > 25 ? substr($row['Cliente'], 0, 25) . '...' : $row['Cliente']) : '' ?>
-                                    </td>
-                                    <td><?= htmlspecialchars($row['DtEmissao'] ?? '') ?></td>
-                                    <td><?= htmlspecialchars($row['DtEntregaVendas'] ?? '') ?></td>
-                                    <td><?= htmlspecialchars($row['DtFCP'] ?? '') ?></td>
-                                    <td><?= htmlspecialchars($row['DtLiberacaoPCP'] ?? 'NULL') ?></td>
-                                    <td><?= htmlspecialchars($row['Qtidade'] ?? '') ?></td>
-                                    <td><?= htmlspecialchars($row['Qt pend'] ?? '') ?></td>
-                                    <td class="<?= ($row['CodStatusPedido'] ?? '') == 20 ? 'status-atrasado' : 'status-prazo' ?>">
-                                        <?= 
-                                            ($row['CodStatusPedido'] ?? '') == 20 ? 'ATRASADO' : 
-                                            (($row['CodStatusPedido'] ?? '') == 10 ? 'NO PRAZO' : 
-                                            (($row['CodStatusPedido'] ?? '') == 30 ? 'ENTREGUE' : 'OUTROS'))
-                                        ?>
-                                    </td>
-                                    <td><?= htmlspecialchars($row['CodEmpresa'] ?? '') ?></td>
-                                </tr>
-                                <?php endwhile; ?>
-                            </tbody>
-                        </table>
-                        <?php 
-                            else: 
-                                throw new Exception("Falha na execução da consulta.");
-                            endif;
-                            
-                        } catch (Exception $e) {
-                            echo "<div class='error fade-in'><i class='fas fa-exclamation-circle'></i> Erro ao carregar dados: " . htmlspecialchars($e->getMessage()) . "</div>";
-                        }
-                        ?>
+                        <?php else: ?>
+                            <div class="no-data">
+                                <i class="fas fa-calendar-alt"></i>
+                                <p>Nenhum dado disponível para o gráfico anual.</p>
+                            </div>
+                        <?php endif; ?>
                     </div>
                 </div>
             </div>
 
             <script>
-                // Background Animation
-                function createParticles() {
-                    const container = document.getElementById('bgAnimation');
-                    const particleCount = 20;
-                    
-                    for (let i = 0; i < particleCount; i++) {
-                        const particle = document.createElement('div');
-                        particle.classList.add('particle');
-                        
-                        const size = Math.random() * 4 + 1;
-                        const left = Math.random() * 100;
-                        const delay = Math.random() * 10;
-                        
-                        particle.style.width = `${size}px`;
-                        particle.style.height = `${size}px`;
-                        particle.style.left = `${left}%`;
-                        particle.style.animationDelay = `${delay}s`;
-                        
-                        container.appendChild(particle);
-                    }
-                }
-
-                // Função para download de gráficos
-                function downloadChart(chartId) {
-                    const chart = Chart.getChart(chartId);
-                    if (chart) {
-                        const link = document.createElement('a');
-                        link.download = `${chartId}.png`;
-                        link.href = chart.toBase64Image();
-                        link.click();
-                    }
-                }
-
-                // Função para verificar dados vazios - CORRIGIDA
-                function hasValidData(data) {
-                    if (!data || data.length === 0) return false;
-                    
-                    // Se for array, verifica se tem algum valor > 0
-                    if (Array.isArray(data)) {
-                        return data.some(value => value > 0);
-                    }
-                    
-                    // Se for objeto, verifica os valores
-                    if (typeof data === 'object') {
-                        return Object.values(data).some(value => value > 0);
-                    }
-                    
-                    return false;
-                }
-
-                // Função para criar placeholder quando não há dados
-                function createNoDataPlaceholder(canvasId) {
-                    const canvas = document.getElementById(canvasId);
-                    const container = canvas.parentElement;
-                    
-                    // Verificar se já existe um placeholder
-                    if (container.querySelector('.chart-placeholder')) {
-                        return;
-                    }
-                    
-                    const placeholder = document.createElement('div');
-                    placeholder.className = 'chart-placeholder';
-                    placeholder.innerHTML = `
-                        <i class="fas fa-chart-bar"></i>
-                        <p>Nenhum dado disponível</p>
-                        <small>Para o período selecionado</small>
-                    `;
-                    
-                    container.appendChild(placeholder);
-                    canvas.style.display = 'none';
-                }
-
-                // Configurações globais do Chart.js
-                Chart.defaults.color = '#e2e8f0';
-                Chart.defaults.font.family = "'Segoe UI', system-ui, -apple-system, sans-serif";
-                Chart.defaults.font.size = 11;
-                Chart.defaults.plugins.tooltip.backgroundColor = 'rgba(15, 23, 42, 0.9)';
-                Chart.defaults.plugins.tooltip.borderColor = 'rgba(59, 130, 246, 0.5)';
-                Chart.defaults.plugins.tooltip.borderWidth = 1;
-                Chart.defaults.plugins.legend.labels.usePointStyle = true;
-                
-                // Configurações de performance
-                Chart.defaults.animation.duration = 800;
-                Chart.defaults.interaction.mode = 'nearest';
-                Chart.defaults.interaction.intersect = false;
-
-                // Preparar dados para JavaScript - CORRIGIDO
+                // Dados dos gráficos
                 const chartData = {
                     status: {
                         labels: <?= json_encode(array_keys($dados_graficos['status'] ?? [])) ?>,
@@ -1406,10 +634,6 @@ if ($conn) {
                         labels: <?= json_encode(array_keys($dados_graficos['top_produtos'] ?? [])) ?>,
                         data: <?= json_encode(array_values($dados_graficos['top_produtos'] ?? [])) ?>
                     },
-                    atrasos: {
-                        labels: <?= json_encode(array_keys($dados_graficos['dias_atraso'] ?? [])) ?>,
-                        data: <?= json_encode(array_values($dados_graficos['dias_atraso'] ?? [])) ?>
-                    },
                     vendasMensais: {
                         labels: <?= json_encode(array_keys($dados_graficos['vendas_mensais'] ?? [])) ?>,
                         data: <?= json_encode(array_values($dados_graficos['vendas_mensais'] ?? [])) ?>
@@ -1420,366 +644,283 @@ if ($conn) {
                     }
                 };
 
-                // DEBUG: Verificar dados no console
-                console.log('Dados dos gráficos:', chartData);
-
-                // Paleta de cores
-                const colorPalette = {
-                    primary: ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#84cc16', '#f97316', '#ec4899', '#64748b'],
-                    sequential: ['#3b82f6', '#60a5fa', '#93c5fd', '#bfdbfe'],
-                    qualitative: ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#84cc16', '#f97316']
-                };
-
-                // Array para armazenar instâncias dos gráficos
-                const chartInstances = {};
-
-                // Inicializar gráficos após o DOM carregar
-                document.addEventListener('DOMContentLoaded', function() {
-                    console.log('DOM Carregado - Iniciando gráficos...');
-                    createParticles();
-                    initializeCharts();
-                    
-                    // Destacar filtros ativos
-                    const periodoSelect = document.getElementById('periodo');
-                    const mesAnoSelect = document.getElementById('mes_ano');
-                    const anoSelect = document.getElementById('ano');
-
-                    if (periodoSelect.value) periodoSelect.classList.add('periodo-active');
-                    if (mesAnoSelect.value) mesAnoSelect.classList.add('periodo-active');
-                    if (anoSelect.value) anoSelect.classList.add('periodo-active');
-
-                    periodoSelect.addEventListener('change', function() {
-                        this.classList.toggle('periodo-active', !!this.value);
-                    });
-
-                    mesAnoSelect.addEventListener('change', function() {
-                         this.classList.toggle('periodo-active', !!this.value);
-                    });
-
-                    anoSelect.addEventListener('change', function() {
-                         this.classList.toggle('periodo-active', !!this.value);
-                    });
-
-                    // Busca em tempo real
-                    const searchInput = document.getElementById('searchInput');
-                    searchInput.addEventListener('input', function() {
-                        const valor = this.value.toLowerCase();
-                        const linhas = document.querySelectorAll('#tabela46 tbody tr');
-                        
-                        linhas.forEach(function(linha) {
-                            const texto = linha.textContent.toLowerCase();
-                            linha.style.display = texto.includes(valor) ? '' : 'none';
-                        });
-                    });
-                });
+                // Configuração padrão do Chart.js
+                Chart.defaults.color = '#e2e8f0';
+                Chart.defaults.font.family = 'Segoe UI';
 
                 function initializeCharts() {
-                    console.log('Inicializando gráficos...');
                     
-                    // 1. Gráfico de Status dos Pedidos
-                    if (hasValidData(chartData.status.data)) {
-                        console.log('Criando gráfico de Status:', chartData.status);
-                        try {
-                            chartInstances.chartStatus = new Chart(document.getElementById('chartStatus'), {
-                                type: 'doughnut',
-                                data: {
-                                    labels: chartData.status.labels,
-                                    datasets: [{
-                                        data: chartData.status.data,
-                                        backgroundColor: colorPalette.primary,
-                                        borderWidth: 2,
-                                        borderColor: 'rgba(30, 41, 59, 0.8)'
-                                    }]
-                                },
-                                options: {
-                                    responsive: true,
-                                    maintainAspectRatio: false,
-                                    cutout: '60%',
-                                    plugins: {
-                                        legend: {
-                                            position: 'right',
-                                            labels: {
-                                                padding: 15,
-                                                usePointStyle: true,
-                                                pointStyle: 'circle'
-                                            }
-                                        }
-                                    }
-                                }
-                            });
-                            document.getElementById('chartStatus').classList.add('chart-fade-in');
-                        } catch (error) {
-                            console.error('Erro ao criar gráfico de Status:', error);
-                            createNoDataPlaceholder('chartStatus');
-                        }
-                    } else {
-                        console.log('Sem dados para gráfico de Status');
-                        createNoDataPlaceholder('chartStatus');
-                    }
-
-                    // 2. Gráfico de Top Clientes
-                    if (hasValidData(chartData.clientes.data)) {
-                        console.log('Criando gráfico de Clientes:', chartData.clientes);
-                        try {
-                            chartInstances.chartClientes = new Chart(document.getElementById('chartClientes'), {
-                                type: 'bar',
-                                data: {
-                                    labels: chartData.clientes.labels.map(label => 
-                                        label.length > 25 ? label.substring(0, 25) + '...' : label
-                                    ),
-                                    datasets: [{
-                                        label: 'Nº de Pedidos',
-                                        data: chartData.clientes.data,
-                                        backgroundColor: colorPalette.sequential[0],
-                                        borderColor: colorPalette.sequential[1],
-                                        borderWidth: 1
-                                    }]
-                                },
-                                options: {
-                                    responsive: true,
-                                    maintainAspectRatio: false,
-                                    indexAxis: 'y',
-                                    plugins: {
-                                        legend: { display: false }
+                    // Gráfico de Status (Pizza)
+                    if (chartData.status.labels.length > 0 && chartData.status.data.some(val => val > 0)) {
+                        const ctx = document.getElementById('chartStatus').getContext('2d');
+                        new Chart(ctx, {
+                            type: 'doughnut',
+                            data: {
+                                labels: chartData.status.labels,
+                                datasets: [{
+                                    data: chartData.status.data,
+                                    backgroundColor: ['#ef4444', '#10b981', '#f59e0b'],
+                                    borderWidth: 2,
+                                    borderColor: '#1e293b'
+                                }]
+                            },
+                            options: {
+                                responsive: true,
+                                maintainAspectRatio: false,
+                                plugins: {
+                                    legend: {
+                                        position: 'bottom'
                                     },
-                                    scales: {
-                                        x: {
-                                            beginAtZero: true,
-                                            grid: { color: 'rgba(100, 116, 139, 0.2)' }
-                                        },
-                                        y: {
-                                            grid: { color: 'rgba(100, 116, 139, 0.1)' }
-                                        }
-                                    }
-                                }
-                            });
-                            document.getElementById('chartClientes').classList.add('chart-fade-in');
-                        } catch (error) {
-                            console.error('Erro ao criar gráfico de Clientes:', error);
-                            createNoDataPlaceholder('chartClientes');
-                        }
-                    } else {
-                        console.log('Sem dados para gráfico de Clientes');
-                        createNoDataPlaceholder('chartClientes');
-                    }
-
-                    // 3. Gráfico de Top Produtos
-                    if (hasValidData(chartData.produtos.data)) {
-                        console.log('Criando gráfico de Produtos:', chartData.produtos);
-                        try {
-                            chartInstances.chartProdutos = new Chart(document.getElementById('chartProdutos'), {
-                                type: 'bar',
-                                data: {
-                                    labels: chartData.produtos.labels.map(label => 
-                                        label.length > 20 ? label.substring(0, 20) + '...' : label
-                                    ),
-                                    datasets: [{
-                                        label: 'Nº de Pedidos',
-                                        data: chartData.produtos.data,
-                                        backgroundColor: colorPalette.qualitative,
-                                        borderWidth: 1
-                                    }]
-                                },
-                                options: {
-                                    responsive: true,
-                                    maintainAspectRatio: false,
-                                    plugins: { legend: { display: false } },
-                                    scales: {
-                                        y: {
-                                            beginAtZero: true,
-                                            grid: { color: 'rgba(100, 116, 139, 0.2)' }
-                                        },
-                                        x: {
-                                            grid: { color: 'rgba(100, 116, 139, 0.1)' },
-                                            ticks: { 
-                                                maxRotation: 45,
-                                                minRotation: 45
+                                    tooltip: {
+                                        callbacks: {
+                                            label: function(context) {
+                                                const total = context.dataset.data.reduce((a, b) => a + b, 0);
+                                                const percentage = Math.round((context.parsed / total) * 100);
+                                                return `${context.label}: ${context.parsed} (${percentage}%)`;
                                             }
                                         }
                                     }
                                 }
-                            });
-                            document.getElementById('chartProdutos').classList.add('chart-fade-in');
-                        } catch (error) {
-                            console.error('Erro ao criar gráfico de Produtos:', error);
-                            createNoDataPlaceholder('chartProdutos');
-                        }
-                    } else {
-                        console.log('Sem dados para gráfico de Produtos');
-                        createNoDataPlaceholder('chartProdutos');
+                            }
+                        });
                     }
 
-                    // 4. Gráfico de Distribuição de Atrasos
-                    if (hasValidData(chartData.atrasos.data)) {
-                        console.log('Criando gráfico de Atrasos:', chartData.atrasos);
-                        try {
-                            chartInstances.chartAtrasos = new Chart(document.getElementById('chartAtrasos'), {
-                                type: 'pie',
-                                data: {
-                                    labels: chartData.atrasos.labels,
-                                    datasets: [{
-                                        data: chartData.atrasos.data,
-                                        backgroundColor: colorPalette.qualitative,
-                                        borderWidth: 2,
-                                        borderColor: 'rgba(30, 41, 59, 0.8)'
-                                    }]
+                    // Gráfico de Clientes (Barras Horizontais)
+                    if (chartData.clientes.labels.length > 0 && chartData.clientes.data.some(val => val > 0)) {
+                        const ctx = document.getElementById('chartClientes').getContext('2d');
+                        new Chart(ctx, {
+                            type: 'bar',
+                            data: {
+                                labels: chartData.clientes.labels.map(label => 
+                                    label.length > 25 ? label.substring(0, 25) + '...' : label
+                                ),
+                                datasets: [{
+                                    label: 'Quantidade de Pedidos',
+                                    data: chartData.clientes.data,
+                                    backgroundColor: '#3b82f6',
+                                    borderColor: '#1d4ed8',
+                                    borderWidth: 1
+                                }]
+                            },
+                            options: {
+                                responsive: true,
+                                maintainAspectRatio: false,
+                                indexAxis: 'y',
+                                plugins: {
+                                    legend: {
+                                        display: false
+                                    }
                                 },
-                                options: {
-                                    responsive: true,
-                                    maintainAspectRatio: false,
-                                    plugins: {
-                                        legend: {
-                                            position: 'right',
-                                            labels: { padding: 15 }
+                                scales: {
+                                    x: {
+                                        beginAtZero: true,
+                                        grid: {
+                                            color: 'rgba(148, 163, 184, 0.1)'
+                                        }
+                                    },
+                                    y: {
+                                        grid: {
+                                            color: 'rgba(148, 163, 184, 0.1)'
                                         }
                                     }
                                 }
-                            });
-                            document.getElementById('chartAtrasos').classList.add('chart-fade-in');
-                        } catch (error) {
-                            console.error('Erro ao criar gráfico de Atrasos:', error);
-                            createNoDataPlaceholder('chartAtrasos');
-                        }
-                    } else {
-                        console.log('Sem dados para gráfico de Atrasos');
-                        createNoDataPlaceholder('chartAtrasos');
+                            }
+                        });
                     }
 
-                    // 5. Gráfico de Vendas Mensais
-                    if (hasValidData(chartData.vendasMensais.data)) {
-                        console.log('Criando gráfico de Vendas Mensais:', chartData.vendasMensais);
-                        try {
-                            chartInstances.chartVendasMensais = new Chart(document.getElementById('chartVendasMensais'), {
-                                type: 'line',
-                                data: {
-                                    labels: chartData.vendasMensais.labels.map(label => {
-                                        const [year, month] = label.split('-');
-                                        return `${month}/${year.substring(2)}`;
-                                    }),
-                                    datasets: [{
-                                        label: 'Pedidos',
-                                        data: chartData.vendasMensais.data,
-                                        backgroundColor: 'rgba(59, 130, 246, 0.1)',
-                                        borderColor: colorPalette.primary[0],
-                                        borderWidth: 3,
-                                        tension: 0.4,
-                                        fill: true,
-                                        pointBackgroundColor: colorPalette.primary[0],
-                                        pointBorderColor: '#fff',
-                                        pointBorderWidth: 2,
-                                        pointRadius: 4,
-                                        pointHoverRadius: 6
-                                    }]
+                    // Gráfico de Produtos (Barras Horizontais)
+                    if (chartData.produtos.labels.length > 0 && chartData.produtos.data.some(val => val > 0)) {
+                        const ctx = document.getElementById('chartProdutos').getContext('2d');
+                        new Chart(ctx, {
+                            type: 'bar',
+                            data: {
+                                labels: chartData.produtos.labels,
+                                datasets: [{
+                                    label: 'Quantidade de Pedidos',
+                                    data: chartData.produtos.data,
+                                    backgroundColor: '#f59e0b',
+                                    borderColor: '#d97706',
+                                    borderWidth: 1
+                                }]
+                            },
+                            options: {
+                                responsive: true,
+                                maintainAspectRatio: false,
+                                indexAxis: 'y',
+                                plugins: {
+                                    legend: {
+                                        display: false
+                                    }
                                 },
-                                options: {
-                                    responsive: true,
-                                    maintainAspectRatio: false,
-                                    plugins: { legend: { display: false } },
-                                    scales: {
-                                        y: {
-                                            beginAtZero: true,
-                                            grid: { color: 'rgba(100, 116, 139, 0.2)' }
-                                        },
-                                        x: {
-                                            grid: { color: 'rgba(100, 116, 139, 0.1)' }
+                                scales: {
+                                    x: {
+                                        beginAtZero: true,
+                                        grid: {
+                                            color: 'rgba(148, 163, 184, 0.1)'
+                                        }
+                                    },
+                                    y: {
+                                        grid: {
+                                            color: 'rgba(148, 163, 184, 0.1)'
                                         }
                                     }
                                 }
-                            });
-                            document.getElementById('chartVendasMensais').classList.add('chart-fade-in');
-                        } catch (error) {
-                            console.error('Erro ao criar gráfico de Vendas Mensais:', error);
-                            createNoDataPlaceholder('chartVendasMensais');
-                        }
-                    } else {
-                        console.log('Sem dados para gráfico de Vendas Mensais');
-                        createNoDataPlaceholder('chartVendasMensais');
+                            }
+                        });
                     }
 
-                    // 6. Gráfico de Vendas Anuais
-                    if (hasValidData(chartData.vendasAnuais.data)) {
-                        console.log('Criando gráfico de Vendas Anuais:', chartData.vendasAnuais);
-                        try {
-                            chartInstances.chartVendasAnuais = new Chart(document.getElementById('chartVendasAnuais'), {
-                                type: 'bar',
-                                data: {
-                                    labels: chartData.vendasAnuais.labels,
-                                    datasets: [{
-                                        label: 'Pedidos',
-                                        data: chartData.vendasAnuais.data,
-                                        backgroundColor: colorPalette.qualitative[1],
-                                        borderColor: colorPalette.qualitative[1],
-                                        borderWidth: 1
-                                    }]
-                                },
-                                options: {
-                                    responsive: true,
-                                    maintainAspectRatio: false,
-                                    plugins: { legend: { display: false } },
-                                    scales: {
-                                        y: {
-                                            beginAtZero: true,
-                                            grid: { color: 'rgba(100, 116, 139, 0.2)' }
-                                        },
-                                        x: {
-                                            grid: { color: 'rgba(100, 116, 139, 0.1)' }
+                    // Gráfico de Vendas Mensais (Linha)
+                    if (chartData.vendasMensais.labels.length > 0 && chartData.vendasMensais.data.some(val => val > 0)) {
+                        // Ordenar dados mensais para exibir corretamente na linha
+                        const labels = chartData.vendasMensais.labels;
+                        const data = chartData.vendasMensais.data;
+                        
+                        const sortedData = labels.map((label, index) => ({
+                            label: label,
+                            data: data[index]
+                        })).sort((a, b) => a.label.localeCompare(b.label));
+                        
+                        const sortedLabels = sortedData.map(item => {
+                            const [year, month] = item.label.split('-');
+                            const monthNames = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
+                            return `${monthNames[parseInt(month) - 1]}/${year}`;
+                        });
+                        
+                        const sortedValues = sortedData.map(item => item.data);
+                        
+                        const ctx = document.getElementById('chartVendasMensais').getContext('2d');
+                        new Chart(ctx, {
+                            type: 'line',
+                            data: {
+                                labels: sortedLabels,
+                                datasets: [{
+                                    label: 'Pedidos por Mês',
+                                    data: sortedValues,
+                                    borderColor: '#10b981',
+                                    backgroundColor: 'rgba(16, 185, 129, 0.1)',
+                                    fill: true,
+                                    tension: 0.4,
+                                    borderWidth: 2
+                                }]
+                            },
+                            options: {
+                                responsive: true,
+                                maintainAspectRatio: false,
+                                scales: {
+                                    y: {
+                                        beginAtZero: true,
+                                        grid: {
+                                            color: 'rgba(148, 163, 184, 0.1)'
+                                        }
+                                    },
+                                    x: {
+                                        grid: {
+                                            color: 'rgba(148, 163, 184, 0.1)'
                                         }
                                     }
                                 }
-                            });
-                            document.getElementById('chartVendasAnuais').classList.add('chart-fade-in');
-                        } catch (error) {
-                            console.error('Erro ao criar gráfico de Vendas Anuais:', error);
-                            createNoDataPlaceholder('chartVendasAnuais');
-                        }
-                    } else {
-                        console.log('Sem dados para gráfico de Vendas Anuais');
-                        createNoDataPlaceholder('chartVendasAnuais');
+                            }
+                        });
                     }
 
-                    console.log('Finalizada inicialização dos gráficos');
+                    // Gráfico de Vendas Anuais (Barras)
+                    if (chartData.vendasAnuais.labels.length > 0 && chartData.vendasAnuais.data.some(val => val > 0)) {
+                        const ctx = document.getElementById('chartVendasAnuais').getContext('2d');
+                        new Chart(ctx, {
+                            type: 'bar',
+                            data: {
+                                labels: chartData.vendasAnuais.labels,
+                                datasets: [{
+                                    label: 'Pedidos por Ano',
+                                    data: chartData.vendasAnuais.data,
+                                    backgroundColor: '#8b5cf6',
+                                    borderColor: '#7c3aed',
+                                    borderWidth: 1
+                                }]
+                            },
+                            options: {
+                                responsive: true,
+                                maintainAspectRatio: false,
+                                scales: {
+                                    y: {
+                                        beginAtZero: true,
+                                        grid: {
+                                            color: 'rgba(148, 163, 184, 0.1)'
+                                        }
+                                    },
+                                    x: {
+                                        grid: {
+                                            color: 'rgba(148, 163, 184, 0.1)'
+                                        }
+                                    }
+                                }
+                            }
+                        });
+                    }
                 }
 
-                function exportarParaExcel() {
-                    const tabela = document.getElementById('tabela46');
-                    const html = tabela.outerHTML;
-                    
-                    const blob = new Blob([html], { type: 'application/vnd.ms-excel' });
-                    const url = URL.createObjectURL(blob);
-                    const a = document.createElement('a');
-                    a.href = url;
-                    a.download = 'vW_Ind46_completo.xls';
-                    document.body.appendChild(a);
-                    a.click();
-                    document.body.removeChild(a);
-                    URL.revokeObjectURL(url);
-                }
-
-                function clearSearch() {
-                    document.getElementById('searchInput').value = '';
-                    const linhas = document.querySelectorAll('#tabela46 tbody tr');
-                    linhas.forEach(function(linha) {
-                        linha.style.display = '';
-                    });
-                }
+                // Inicializar gráficos quando a página carregar
+                document.addEventListener('DOMContentLoaded', function() {
+                    initializeCharts();
+                });
             </script>
 
-        <?php else: ?>
-            <div class="loading fade-in">
-                <h3><i class="fas fa-exclamation-triangle"></i> Erro de conexão com o banco de dados</h3>
-                <p>Verifique as configurações de conexão.</p>
-                <?php if (sqlsrv_errors()): ?>
-                    <pre><?= htmlspecialchars(print_r(sqlsrv_errors(), true)) ?></pre>
-                <?php endif; ?>
-            </div>
+            <?php if ($total_registros > 0): ?>
+                <div class="tabela-container">
+                    <div class="tabela-header">
+                        <h3><i class="fas fa-table"></i> Detalhes dos Pedidos (<?= number_format($total_registros, 0, ',', '.') ?> registros)</h3>
+                    </div>
+                    <div class="tabela-content">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <?php if (!empty($dados)): ?>
+                                        <?php foreach (array_keys($dados[0]) as $coluna): ?>
+                                            <th><?= htmlspecialchars($coluna) ?></th>
+                                        <?php endforeach; ?>
+                                    <?php endif; ?>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php foreach ($dados as $row): ?>
+                                    <tr>
+                                        <?php foreach ($row as $key => $value): ?>
+                                            <td>
+                                                <?php 
+                                                if ($value instanceof DateTime) {
+                                                    echo $value->format('d/m/Y');
+                                                } else {
+                                                    $texto = htmlspecialchars($value ?? '');
+                                                    // Destacar o status (mapeamento para cor)
+                                                    if ($key === 'StatusEntrega') {
+                                                        $status_map = ['10' => 'ATRASADO', '20' => 'NA DATA', '30' => 'ADIANTADO'];
+                                                        $status_text = $status_map[$texto] ?? $texto;
+                                                        $color = '';
+                                                        if ($texto === '10') $color = 'color: var(--danger); font-weight: bold;';
+                                                        if ($texto === '20') $color = 'color: var(--success); font-weight: bold;';
+                                                        if ($texto === '30') $color = 'color: var(--warning); font-weight: bold;';
+                                                        echo "<span style='$color'>$status_text</span>";
+                                                    } else {
+                                                        echo strlen($texto) > 50 ? substr($texto, 0, 50) . '...' : $texto;
+                                                    }
+                                                }
+                                                ?>
+                                            </td>
+                                        <?php endforeach; ?>
+                                    </tr>
+                                <?php endforeach; ?>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            <?php endif; ?>
         <?php endif; ?>
+
+        <?php
+        if ($conn) {
+            sqlsrv_close($conn);
+        }
+        ?>
     </div>
 </body>
 </html>
-
-<?php
-// Fechar conexão
-if ($conn) {
-    sqlsrv_close($conn);
-}
-?>

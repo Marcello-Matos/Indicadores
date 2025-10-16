@@ -1,3 +1,21 @@
+<?php
+// =========================================================================
+// VERIFICAÇÃO DE LOGIN E CARREGAMENTO DO NOME DO USUÁRIO
+// =========================================================================
+session_start();
+
+// Verificar se o usuário está logado
+if (!isset($_SESSION['usuario_logado']) || $_SESSION['usuario_logado'] !== true) {
+    header('Location: login.php');
+    exit();
+}
+
+// Carregar informações do usuário da sessão
+$usuario_nome = $_SESSION['usuario_nome'] ?? 'Usuário';
+$usuario_login = $_SESSION['usuario_login'] ?? '';
+$usuario_departamento = $_SESSION['usuario_departamento'] ?? '';
+?>
+
 <!DOCTYPE html>
 <html lang="pt-BR">
 <head>
@@ -260,7 +278,6 @@
         .nav-item.active.has-submenu > .nav-link {
              padding-left: 20px; /* Remove o padding extra que interfere no ícone de seta */
         }
-
 
         .nav-item.active .nav-link i {
             color: var(--accent-color);
@@ -631,7 +648,6 @@
                 padding: 20px;
             }
         }
-        
     </style>
 </head>
 <body>
@@ -705,7 +721,7 @@
                     </li>
                     
                     <li class="nav-item">
-                        <a href="login.php" class="nav-link">
+                        <a href="logout.php" class="nav-link">
                             <i class="fas fa-sign-out-alt"></i>
                             <span>Sair</span>
                         </a>
@@ -726,7 +742,7 @@
                     <div class="avatar">
                         <i class="fas fa-user-circle"></i> 
                     </div>
-                    <span class="user-name">TESTE GERENTE</span>
+                    <span class="user-name"><?php echo htmlspecialchars($usuario_nome); ?></span>
                 </div>
             </header>
 
@@ -770,7 +786,7 @@
                     </div>
                 </div>
 
-                <div class="dashboard-card" onclick="window.location.href='indicadores45.php'">
+                <div class="dashboard-card" onclick="window.location.href='indicadores46.php'">
                     <div class="card-header">
                         <h3 class="card-title">Indicadores Ativos 46</h3>
                         <a href="indicadores46.php">
@@ -789,7 +805,7 @@
                     </div>
                 </div>
 
-                <div class="dashboard-card" onclick="window.location.href='indicadores45.php'">
+                <div class="dashboard-card" onclick="window.location.href='indicadores47.php'">
                     <div class="card-header">
                         <h3 class="card-title">Indicadores Ativos 47</h3>
                         <a href="indicadores47.php">
@@ -804,25 +820,6 @@
                             <div class="chart-bar" style="height: 65%"></div>
                             <div class="chart-bar" style="height: 45%"></div>
                             <div class="chart-bar" style="height: 95%"></div>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="dashboard-card" onclick="window.location.href='metasdotrimestre.php'">
-                    <div class="card-header">
-                        <h3 class="card-title">Metas do Trimestre</h3>
-                        <a href="metasdotrimestre.php">
-                            <i class="fas fa-bullseye card-icon"></i>
-                        </a>
-                    </div>
-                    <div class="card-content">
-                        <p>75% das metas trimestrais já foram alcançadas.</p>
-                        <div class="card-chart">
-                            <div class="chart-bar" style="height: 75%"></div>
-                            <div class="chart-bar" style="height: 60%"></div>
-                            <div class="chart-bar" style="height: 90%"></div>
-                            <div class="chart-bar" style="height: 80%"></div>
-                            <div class="chart-bar" style="height: 70%"></div>
                         </div>
                     </div>
                 </div>
@@ -842,25 +839,6 @@
                             <div class="chart-bar" style="height: 20%"></div>
                             <div class="chart-bar" style="height: 40%"></div>
                             <div class="chart-bar" style="height: 10%"></div>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="dashboard-card" onclick="window.location.href='desempenhodaequipe.php'">
-                    <div class="card-header">
-                        <h3 class="card-title">Desempenho da Equipe</h3>
-                        <a href="desempenhodaequipe.php">
-                            <i class="fas fa-users card-icon"></i>
-                        </a>
-                    </div>
-                    <div class="card-content">
-                        <p>Avaliação de performance dos membros da equipe.</p>
-                        <div class="card-chart">
-                            <div class="chart-bar" style="height: 85%"></div>
-                            <div class="chart-bar" style="height: 70%"></div>
-                            <div class="chart-bar" style="height: 90%"></div>
-                            <div class="chart-bar" style="height: 65%"></div>
-                            <div class="chart-bar" style="height: 80%"></div>
                         </div>
                     </div>
                 </div>

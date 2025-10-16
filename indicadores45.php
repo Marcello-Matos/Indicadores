@@ -1,5 +1,21 @@
 <?php
 // =========================================================================
+// VERIFICAÇÃO DE LOGIN E CARREGAMENTO DO NOME DO USUÁRIO
+// =========================================================================
+session_start();
+
+// Verificar se o usuário está logado
+if (!isset($_SESSION['usuario_logado']) || $_SESSION['usuario_logado'] !== true) {
+    header('Location: login.php');
+    exit();
+}
+
+// Carregar informações do usuário da sessão
+$usuario_nome = $_SESSION['usuario_nome'] ?? 'Usuário';
+$usuario_login = $_SESSION['usuario_login'] ?? '';
+$usuario_departamento = $_SESSION['usuario_departamento'] ?? '';
+
+// =========================================================================
 // ATENÇÃO: LINHAS DE EXIBIÇÃO DE ERROS - ESSENCIAIS PARA DEPURAR
 // Se a página ficar em branco, essas linhas forçarão a mensagem de erro.
 error_reporting(E_ALL);
@@ -569,14 +585,14 @@ if (empty($erro) && $conn !== false) {
                     <div class="avatar">
                         <i class="fas fa-user-circle"></i> 
                     </div>
-                    <span class="user-name">TESTE GERENTE</span>
+                    <span class="user-name"><?php echo htmlspecialchars($usuario_nome); ?></span>
                 </div>
 
                 <!-- BOTÃO VOLTAR ABAIXO DO USUÁRIO -->
                 <div style="position: absolute; top: 70px; right: 40px; z-index: 1000;">
-                    <button class="back-button-below" onclick="goBack()">
+                    <a href="dashboard.php" class="back-button-below">
                         <i class="fas fa-arrow-left"></i> Voltar
-                    </button>
+                    </a>
                 </div>
             </div>
         </div>
