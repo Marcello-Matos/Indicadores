@@ -1,4 +1,27 @@
 <?php
+// =========================================================================
+// VERIFICAÇÃO DE LOGIN E CARREGAMENTO DO NOME DO USUÁRIO
+// =========================================================================
+session_start();
+
+// Verificar se o usuário está logado
+if (!isset($_SESSION['usuario_logado']) || $_SESSION['usuario_logado'] !== true) {
+    header('Location: login.php');
+    exit();
+}
+
+// Carregar informações do usuário da sessão (conforme seu código de referência)
+$usuario_nome = $_SESSION['usuario_nome'] ?? 'Usuário';
+$usuario_login = $_SESSION['usuario_login'] ?? '';
+$usuario_departamento = $_SESSION['usuario_departamento'] ?? '';
+
+// =========================================================================
+// ATENÇÃO: LINHAS DE EXIBIÇÃO DE ERROS - ESSENCIAIS PARA DEPURAR
+// Se a página ficar em branco, essas linhas forçarão a mensagem de erro.
+error_reporting(E_ALL);
+ini_set('display_errors', 1);
+// =========================================================================
+
 // =============================================
 // CONEXÃO COM O BANCO DE DADOS
 // =============================================
@@ -233,14 +256,17 @@ if ($conn === false) {
             z-index: 10;
         }
 
-        /* Logo */
+        /* ------------------------------------- */
+        /* LOGO HARMONIOSO - ALERTAS - COR BRANCA */
+        /* ------------------------------------- */
         .logo-section {
             display: flex;
             align-items: center;
-            padding: 25px 20px;
+            justify-content: center;
+            padding: 20px 15px;
             height: 80px;
             border-bottom: 1px solid var(--header-border);
-            background: linear-gradient(90deg, rgba(106, 17, 203, 0.3), rgba(37, 117, 252, 0.3));
+            background: linear-gradient(90deg, rgba(106, 17, 203, 0.2), rgba(37, 117, 252, 0.2));
             position: relative;
             overflow: hidden;
         }
@@ -252,7 +278,7 @@ if ($conn === false) {
             left: -100%;
             width: 100%;
             height: 100%;
-            background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.1), transparent);
+            background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.08), transparent);
             transition: left 0.8s;
         }
 
@@ -260,24 +286,73 @@ if ($conn === false) {
             left: 100%;
         }
 
-        .logo-icon {
-            font-size: 36px;
-            font-weight: 700;
-            line-height: 1;
-            margin-right: 10px;
-            background: linear-gradient(to bottom, var(--accent-color), #ffffff);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            filter: drop-shadow(0 0 5px var(--glow-color));
+        .logo-image-container {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 100%;
+            height: 100%;
+            position: relative;
         }
 
-        .logo-text {
-            font-size: 22px;
-            font-weight: 700;
-            background: linear-gradient(to right, #ffffff, var(--accent-color));
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            letter-spacing: 1px;
+        .logo-image {
+            width: auto;
+            height: 45px;
+            object-fit: contain;
+            /* FILTRO PARA DEIXAR O LOGO BRANCO */
+            filter: brightness(0) invert(1) drop-shadow(0 0 10px rgba(255, 255, 255, 0.3));
+            transition: all 0.3s ease;
+        }
+
+        .logo-section:hover .logo-image {
+            transform: scale(1.05);
+            filter: brightness(0) invert(1) drop-shadow(0 0 15px rgba(255, 255, 255, 0.5));
+        }
+
+        /* Efeito de brilho sutil atrás do logo */
+        .logo-glow {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 80%;
+            height: 80%;
+            background: radial-gradient(circle, 
+                rgba(255, 255, 255, 0.15) 0%, 
+                rgba(255, 255, 255, 0.1) 30%, 
+                transparent 70%);
+            filter: blur(15px);
+            animation: logoGlowPulse 3s ease-in-out infinite alternate;
+            z-index: -1;
+            opacity: 0.6;
+        }
+
+        @keyframes logoGlowPulse {
+            0% { opacity: 0.4; transform: translate(-50%, -50%) scale(0.95); }
+            100% { opacity: 0.7; transform: translate(-50%, -50%) scale(1.05); }
+        }
+
+        /* Responsividade para o logo */
+        @media (max-width: 900px) {
+            .logo-section {
+                padding: 15px 10px;
+                height: 70px;
+            }
+            
+            .logo-image {
+                height: 40px;
+            }
+        }
+
+        @media (max-width: 480px) {
+            .logo-section {
+                padding: 12px 8px;
+                height: 60px;
+            }
+            
+            .logo-image {
+                height: 35px;
+            }
         }
 
         /* Menu de Navegação */
@@ -486,7 +561,7 @@ if ($conn === false) {
             color: rgba(255, 255, 255, 0.5);
         }
 
-        /* Perfil do Usuário */
+        /* Perfil do Usuário - COM BOLINHA DE STATUS ONLINE */
         .user-profile {
             display: flex;
             align-items: center;
@@ -494,10 +569,15 @@ if ($conn === false) {
             border-radius: 10px;
             transition: all 0.3s ease;
             cursor: pointer;
+            position: relative;
         }
 
         .user-profile:hover {
             background-color: rgba(255, 255, 255, 0.1);
+        }
+
+        .user-profile:hover .user-dropdown {
+            display: block;
         }
 
         .avatar {
@@ -511,16 +591,25 @@ if ($conn === false) {
             filter: drop-shadow(0 0 5px var(--glow-color));
         }
 
-        .avatar::after {
-            content: '';
+        /* BOLINHA DE STATUS ONLINE - ADICIONADA CONFORME SEU CÓDIGO DE REFERÊNCIA */
+        .online-status {
             position: absolute;
             bottom: 2px;
             right: 2px;
-            width: 10px;
-            height: 10px;
+            width: 12px;
+            height: 12px;
             background: #00ff00;
             border-radius: 50%;
             border: 2px solid var(--dark-bg);
+            box-shadow: 0 0 8px #00ff00;
+            z-index: 10;
+            animation: pulse-online 2s infinite;
+        }
+
+        @keyframes pulse-online {
+            0% { box-shadow: 0 0 0 0 rgba(0, 255, 0, 0.7); }
+            70% { box-shadow: 0 0 0 6px rgba(0, 255, 0, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(0, 255, 0, 0); }
         }
 
         .user-name {
@@ -529,6 +618,44 @@ if ($conn === false) {
             background: linear-gradient(to right, #ffffff, var(--accent-color));
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
+            max-width: 200px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        /* Dropdown do usuário */
+        .user-dropdown {
+            display: none;
+            position: absolute;
+            top: 100%;
+            right: 0;
+            background: var(--sidebar-bg);
+            border: 1px solid var(--header-border);
+            border-radius: 10px;
+            padding: 10px 0;
+            min-width: 200px;
+            z-index: 1000;
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.3);
+        }
+
+        .user-dropdown a {
+            display: block;
+            padding: 10px 20px;
+            color: var(--text-light);
+            text-decoration: none;
+            transition: all 0.3s ease;
+        }
+
+        .user-dropdown a:hover {
+            background-color: var(--hover-bg);
+            color: var(--accent-color);
+        }
+
+        .user-dropdown a i {
+            margin-right: 10px;
+            width: 16px;
+            text-align: center;
         }
 
         /* Área de Conteúdo Principal */
@@ -1036,8 +1163,10 @@ if ($conn === false) {
         
         <aside class="sidebar">
             <div class="logo-section">
-                <i class="logo-icon">E</i>
-                <span class="logo-text">embaquim</span>
+                <div class="logo-image-container">
+                    <div class="logo-glow"></div>
+                    <img src="img/logo2025.png" alt="Logo Embaquim 2025" class="logo-image">
+                </div>
             </div>
 
             <nav class="nav-menu">
@@ -1100,7 +1229,7 @@ if ($conn === false) {
                     </li>
                     
                     <li class="nav-item">
-                        <a href="login.php" class="nav-link">
+                        <a href="logout.php" class="nav-link">
                             <i class="fas fa-sign-out-alt"></i>
                             <span>Sair</span>
                         </a>
@@ -1120,8 +1249,25 @@ if ($conn === false) {
                 <div class="user-profile">
                     <div class="avatar">
                         <i class="fas fa-user-circle"></i> 
+                        <!-- BOLINHA DE STATUS ONLINE ADICIONADA CONFORME SEU CÓDIGO DE REFERÊNCIA -->
+                        <div class="online-status" title="Usuário Online"></div>
                     </div>
-                    <span class="user-name">TESTE GERENTE</span>
+                    <!-- CORREÇÃO: AGORA MOSTRA O NOME REAL DO USUÁRIO LOGADO CONFORME SEU CÓDIGO DE REFERÊNCIA -->
+                    <span class="user-name" id="userDisplayName"><?php echo htmlspecialchars($usuario_nome); ?></span>
+                    <div class="user-dropdown">
+                        <a href="meuperfil.php">
+                            <i class="fas fa-user"></i>
+                            Meu Perfil
+                        </a>
+                        <a href="configuracoes.php">
+                            <i class="fas fa-cog"></i>
+                            Configurações
+                        </a>
+                        <a href="logout.php">
+                            <i class="fas fa-sign-out-alt"></i>
+                            Sair
+                        </a>
+                    </div>
                 </div>
             </header>
 
@@ -1854,6 +2000,24 @@ if ($conn === false) {
                         } else {
                             card.style.display = 'none';
                         }
+                    });
+                });
+            }
+
+            // Dropdown do usuário
+            const userProfile = document.querySelector('.user-profile');
+            if (userProfile) {
+                userProfile.addEventListener('click', function(e) {
+                    e.stopPropagation();
+                    const dropdown = this.querySelector('.user-dropdown');
+                    dropdown.style.display = dropdown.style.display === 'block' ? 'none' : 'block';
+                });
+
+                // Fechar dropdown ao clicar fora
+                document.addEventListener('click', function() {
+                    const dropdowns = document.querySelectorAll('.user-dropdown');
+                    dropdowns.forEach(dropdown => {
+                        dropdown.style.display = 'none';
                     });
                 });
             }

@@ -1,5 +1,21 @@
 <?php
 // =============================================
+// VERIFICAÇÃO DE LOGIN E CARREGAMENTO DO NOME DO USUÁRIO
+// =============================================
+session_start();
+
+// Verificar se o usuário está logado
+if (!isset($_SESSION['usuario_logado']) || $_SESSION['usuario_logado'] !== true) {
+    header('Location: login.php');
+    exit();
+}
+
+// Carregar informações do usuário da sessão
+$usuario_nome = $_SESSION['usuario_nome'] ?? 'Usuário';
+$usuario_login = $_SESSION['usuario_login'] ?? '';
+$usuario_departamento = $_SESSION['usuario_departamento'] ?? '';
+
+// =============================================
 // CONEXÃO COM O BANCO DE DADOS
 // =============================================
 $serverName = "192.168.0.8,1433";
@@ -295,14 +311,17 @@ if ($conn === false) {
             z-index: 10;
         }
 
-        /* Logo */
+        /* ------------------------------------- */
+        /* LOGO HARMONIOSO - RELATÓRIOS - COR BRANCA */
+        /* ------------------------------------- */
         .logo-section {
             display: flex;
             align-items: center;
-            padding: 25px 20px;
+            justify-content: center;
+            padding: 20px 15px;
             height: 80px;
             border-bottom: 1px solid var(--header-border);
-            background: linear-gradient(90deg, rgba(106, 17, 203, 0.3), rgba(37, 117, 252, 0.3));
+            background: linear-gradient(90deg, rgba(106, 17, 203, 0.2), rgba(37, 117, 252, 0.2));
             position: relative;
             overflow: hidden;
         }
@@ -314,7 +333,7 @@ if ($conn === false) {
             left: -100%;
             width: 100%;
             height: 100%;
-            background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.1), transparent);
+            background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.08), transparent);
             transition: left 0.8s;
         }
 
@@ -322,24 +341,73 @@ if ($conn === false) {
             left: 100%;
         }
 
-        .logo-icon {
-            font-size: 36px;
-            font-weight: 700;
-            line-height: 1;
-            margin-right: 10px;
-            background: linear-gradient(to bottom, var(--accent-color), #ffffff);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            filter: drop-shadow(0 0 5px var(--glow-color));
+        .logo-image-container {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 100%;
+            height: 100%;
+            position: relative;
         }
 
-        .logo-text {
-            font-size: 22px;
-            font-weight: 700;
-            background: linear-gradient(to right, #ffffff, var(--accent-color));
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            letter-spacing: 1px;
+        .logo-image {
+            width: auto;
+            height: 45px;
+            object-fit: contain;
+            /* FILTRO PARA DEIXAR O LOGO BRANCO */
+            filter: brightness(0) invert(1) drop-shadow(0 0 10px rgba(255, 255, 255, 0.3));
+            transition: all 0.3s ease;
+        }
+
+        .logo-section:hover .logo-image {
+            transform: scale(1.05);
+            filter: brightness(0) invert(1) drop-shadow(0 0 15px rgba(255, 255, 255, 0.5));
+        }
+
+        /* Efeito de brilho sutil atrás do logo */
+        .logo-glow {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 80%;
+            height: 80%;
+            background: radial-gradient(circle, 
+                rgba(255, 255, 255, 0.15) 0%, 
+                rgba(255, 255, 255, 0.1) 30%, 
+                transparent 70%);
+            filter: blur(15px);
+            animation: logoGlowPulse 3s ease-in-out infinite alternate;
+            z-index: -1;
+            opacity: 0.6;
+        }
+
+        @keyframes logoGlowPulse {
+            0% { opacity: 0.4; transform: translate(-50%, -50%) scale(0.95); }
+            100% { opacity: 0.7; transform: translate(-50%, -50%) scale(1.05); }
+        }
+
+        /* Responsividade para o logo */
+        @media (max-width: 900px) {
+            .logo-section {
+                padding: 15px 10px;
+                height: 70px;
+            }
+            
+            .logo-image {
+                height: 40px;
+            }
+        }
+
+        @media (max-width: 480px) {
+            .logo-section {
+                padding: 12px 8px;
+                height: 60px;
+            }
+            
+            .logo-image {
+                height: 35px;
+            }
         }
 
         /* Menu de Navegação */
@@ -971,8 +1039,10 @@ if ($conn === false) {
         
         <aside class="sidebar">
             <div class="logo-section">
-                <i class="logo-icon">E</i>
-                <span class="logo-text">embaquim</span>
+                <div class="logo-image-container">
+                    <div class="logo-glow"></div>
+                    <img src="img/logo2025.png" alt="Logo Embaquim 2025" class="logo-image">
+                </div>
             </div>
 
             <nav class="nav-menu">
@@ -1035,7 +1105,7 @@ if ($conn === false) {
                     </li>
                     
                     <li class="nav-item">
-                        <a href="login.php" class="nav-link">
+                        <a href="logout.php" class="nav-link">
                             <i class="fas fa-sign-out-alt"></i>
                             <span>Sair</span>
                         </a>
@@ -1056,7 +1126,7 @@ if ($conn === false) {
                     <div class="avatar">
                         <i class="fas fa-user-circle"></i> 
                     </div>
-                    <span class="user-name">TESTE GERENTE</span>
+                    <span class="user-name"><?php echo htmlspecialchars($usuario_nome); ?></span>
                 </div>
             </header>
 

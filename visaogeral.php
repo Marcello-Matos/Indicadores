@@ -1,4 +1,27 @@
 <?php
+// =========================================================================
+// VERIFICAÇÃO DE LOGIN E CARREGAMENTO DO NOME DO USUÁRIO
+// =========================================================================
+session_start();
+
+// Verificar se o usuário está logado
+if (!isset($_SESSION['usuario_logado']) || $_SESSION['usuario_logado'] !== true) {
+    header('Location: login.php');
+    exit();
+}
+
+// Carregar informações do usuário da sessão
+$usuario_nome = $_SESSION['usuario_nome'] ?? 'Usuário';
+$usuario_login = $_SESSION['usuario_login'] ?? '';
+$usuario_departamento = $_SESSION['usuario_departamento'] ?? '';
+
+// =========================================================================
+// ATENÇÃO: LINHAS DE EXIBIÇÃO DE ERROS - ESSENCIAIS PARA DEPURAR
+// Se a página ficar em branco, essas linhas forçarão a mensagem de erro.
+error_reporting(E_ALL);
+ini_set('display_errors', 1);
+// =========================================================================
+
 // Configurações de conexão
 $serverName = "192.168.0.8,1433";
 $connectionOptions = [
@@ -155,6 +178,10 @@ if ($conn) {
             --card-bg: rgba(16, 0, 43, 0.7);
             --card-border: rgba(123, 44, 191, 0.3);
             --glow: 0 0 15px rgba(0, 247, 255, 0.5);
+            --text-light: #f0f0f0;
+            --text-muted: rgba(255, 255, 255, 0.7);
+            --accent-color: #00f2fe;
+            --glow-color: rgba(0, 242, 254, 0.5);
         }
 
         * {
@@ -206,7 +233,7 @@ if ($conn) {
             padding: 20px;
         }
 
-        header {
+        .header {
             display: flex;
             justify-content: space-between;
             align-items: center;
@@ -219,6 +246,7 @@ if ($conn) {
             display: flex;
             align-items: center;
             gap: 15px;
+            flex: 1;
         }
 
         .logo-icon {
@@ -236,88 +264,125 @@ if ($conn) {
             color: transparent;
         }
 
-        .user-info {
-            display: flex;
-            align-items: center;
-            gap: 15px;
-        }
-
-        .user-avatar {
-            width: 45px;
-            height: 45px;
-            border-radius: 50%;
-            background: linear-gradient(135deg, var(--primary), var(--secondary));
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-weight: bold;
-            border: 2px solid var(--primary);
-        }
-
         .nav-buttons {
             display: flex;
             gap: 15px;
             align-items: center;
+            margin-left: auto;
+            margin-right: 20px;
         }
 
-        .header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 20px 0;
-    border-bottom: 1px solid rgba(123, 44, 191, 0.3);
-    margin-bottom: 30px;
-}
+        /* USER PROFILE - AGORA EXATAMENTE IGUAL AO CÓDIGO DE REFERÊNCIA */
+        .user-profile {
+            display: flex;
+            align-items: center;
+            padding: 10px 18px;
+            border-radius: 12px;
+            transition: all 0.4s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+            cursor: pointer;
+            position: relative;
+            overflow: hidden;
+        }
 
-.logo {
-    display: flex;
-    align-items: center;
-    gap: 15px;
-    flex: 1; /* Ocupa o espaço disponível à esquerda */
-}
+        .user-profile::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: -100%;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.05), transparent);
+            transition: left 0.6s;
+        }
 
-.nav-buttons {
-    display: flex;
-    gap: 15px;
-    align-items: center;
-    margin-left: auto; /* Empurra para a direita */
-    margin-right: 20px; /* Espaço entre o botão e o user-info */
-}
+        .user-profile:hover::before {
+            left: 100%;
+        }
 
-.user-info {
-    display: flex;
-    align-items: center;
-    gap: 15px;
-    flex-shrink: 0; /* Impede que o user-info diminua */
-}
+        .user-profile:hover {
+            background-color: rgba(255, 255, 255, 0.12);
+            transform: translateY(-2px);
+        }
 
-.btn-voltar {
-    background: linear-gradient(135deg, var(--secondary), var(--secondary-dark));
-    color: white;
-    border: none;
-    padding: 12px 25px;
-    border-radius: 10px;
-    cursor: pointer;
-    font-size: 1rem;
-    font-weight: 600;
-    transition: all 0.3s ease;
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    text-decoration: none;
-    box-shadow: 0 4px 15px rgba(123, 44, 191, 0.3);
-    white-space: nowrap; /* Impede quebra de texto */
-}
+        .avatar {
+            position: relative;
+            margin-right: 15px;
+        }
 
-.btn-voltar:hover {
-    transform: translateY(-2px);
-    box-shadow: 0 6px 20px rgba(123, 44, 191, 0.5);
-    background: linear-gradient(135deg, var(--secondary-dark), var(--secondary));
-}
+        .avatar i {
+            font-size: 40px;
+            color: var(--accent-color);
+            transition: all 0.4s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+            filter: drop-shadow(0 0 8px var(--glow-color));
+        }
 
-.btn-voltar i {
-    font-size: 1.1rem;
-}
+        .user-profile:hover .avatar i {
+            transform: scale(1.1) rotate(5deg);
+            filter: drop-shadow(0 0 12px var(--glow-color));
+        }
+
+        /* BOLINHA DE STATUS ONLINE - EXATAMENTE IGUAL AO REFERÊNCIA */
+        .online-status {
+            position: absolute;
+            bottom: 2px;
+            right: 2px;
+            width: 12px;
+            height: 12px;
+            background: #00ff00;
+            border-radius: 50%;
+            border: 2px solid var(--dark);
+            box-shadow: 0 0 8px #00ff00;
+            z-index: 10;
+            animation: pulse-online 2s infinite;
+        }
+
+        @keyframes pulse-online {
+            0% { box-shadow: 0 0 0 0 rgba(0, 255, 0, 0.7); }
+            70% { box-shadow: 0 0 0 6px rgba(0, 255, 0, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(0, 255, 0, 0); }
+        }
+
+        .user-name {
+            font-size: 17px;
+            font-weight: 600;
+            background: linear-gradient(to right, #ffffff, var(--accent-color));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            transition: all 0.4s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+        }
+
+        .user-profile:hover .user-name {
+            background: linear-gradient(to right, var(--accent-color), #ffffff);
+            -webkit-background-clip: text;
+        }
+
+        .btn-voltar {
+            background: linear-gradient(135deg, var(--secondary), var(--secondary-dark));
+            color: white;
+            border: none;
+            padding: 12px 25px;
+            border-radius: 10px;
+            cursor: pointer;
+            font-size: 1rem;
+            font-weight: 600;
+            transition: all 0.3s ease;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            text-decoration: none;
+            box-shadow: 0 4px 15px rgba(123, 44, 191, 0.3);
+            white-space: nowrap;
+        }
+
+        .btn-voltar:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(123, 44, 191, 0.5);
+            background: linear-gradient(135deg, var(--secondary-dark), var(--secondary));
+        }
+
+        .btn-voltar i {
+            font-size: 1.1rem;
+        }
 
         .dashboard-title {
             font-size: 2.2rem;
@@ -329,6 +394,7 @@ if ($conn) {
             text-align: center;
             font-weight: 300;
             letter-spacing: 1px;
+            font-weight: bold;
         }
 
         .dashboard-subtitle {
@@ -514,7 +580,7 @@ if ($conn) {
                 grid-template-columns: 1fr;
             }
             
-            header {
+            .header {
                 flex-direction: column;
                 gap: 20px;
             }
@@ -536,38 +602,33 @@ if ($conn) {
     <div class="grid-lines"></div>
     
     <div class="container">
-        <header>
+        <div class="header">
             <div class="logo">
                 <div class="logo-icon"><i class="fas fa-chart-network"></i></div>
                 <div class="logo-text">ANALISE GERAL</div>
             </div>
             
             <div class="nav-buttons">
-                <a href="javascript:history.back()" class="btn-voltar">
+                <a href="dashboard.php" class="btn-voltar">
                     <i class="fas fa-arrow-left"></i>
                     Voltar
                 </a>
             </div>
             
-            <div class="user-info">
-                <div class="user-avatar">AD</div>
-                <div>
-                    <div>Admin User</div>
-                    <div style="font-size: 0.8rem; color: var(--light);">Administrador do Sistema</div>
+            <!-- USER PROFILE - AGORA EXATAMENTE IGUAL AO CÓDIGO DE REFERÊNCIA -->
+            <div class="user-profile">
+                <div class="avatar">
+                    <i class="fas fa-user-circle"></i> 
+                    <!-- BOLINHA DE STATUS ONLINE - EXATAMENTE IGUAL -->
+                    <div class="online-status" title="Usuário Online"></div>
                 </div>
+                <!-- NOME DO USUÁRIO - EXATAMENTE IGUAL AO REFERÊNCIA -->
+                <span class="user-name"><?php echo htmlspecialchars($usuario_nome); ?></span>
             </div>
-        </header>
+        </div>
         
         <h1 class="dashboard-title">VISÃO GERAL DOS INDICADORES</h1>
         <p class="dashboard-subtitle">Dados em tempo real dos principais indicadores de performance</p>
-        
-        <div class="status-badge <?php echo $conn ? 'status-success' : 'status-warning'; ?>">
-            <i class="fas <?php echo $conn ? 'fa-check-circle' : 'fa-exclamation-triangle'; ?>"></i>
-            Sistema <?php echo $conn ? 'Conectado ao Banco de Dados - Dados Reais' : 'Operando com Dados de Demonstração'; ?>
-            <?php if ($conn): ?>
-                <br><small>✅ 4 tabelas conectadas | 📊 <?php echo $total_registros; ?> registros processados</small>
-            <?php endif; ?>
-        </div>
         
         <div class="kpi-grid">
             <div class="kpi-card">

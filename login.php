@@ -1,31 +1,39 @@
 <?php
 // =========================================================================
-// CONFIGURAÇÃO DE LOGIN - CORRIGIDO PARA SINCRONIZAR COM O CADASTRO
+// CONFIGURAÇÃO INICIAL E CONEXÃO
 // =========================================================================
 session_start();
-error_reporting(E_ALL);
-ini_set('display_errors', 1);
 
-// Configurações de conexão
-$serverName = "192.168.0.8,1433";
+// ATENÇÃO DE SEGURANÇA: REMOVA OU COMENTE ESSAS LINHAS EM PRODUÇÃO
+// error_reporting(E_ALL);
+// ini_set('display_errors', 1);
+
+// ATENÇÃO: SUBSTITUA PELAS SUAS CREDENCIAIS REAIS E USE VARIÁVEIS DE AMBIENTE
+$serverName = "servidor"; 
 $connectionOptions = [
-    "Database" => "Indicadores",
+    "Database" => "dbkalpa",
     "Uid" => "sa", 
-    "PWD" => "aplak2904&",
+    "PWD" => "aplak", 
     "CharacterSet" => "UTF-8",
     "TrustServerCertificate" => true,
     "Encrypt" => false,
     "ReturnDatesAsStrings" => true
 ];
 
-// Função de Criptografia original (C# para PHP) - MANTIDA PARA USUÁRIOS ANTIGOS
-function fSenha($senha) {
+// =========================================================================
+// FUNÇÕES DE CRIPTOGRAFIA LEGADAS (APENAS PARA VALIDAÇÃO)
+// =========================================================================
+
+function fGerarNovoHash($senha) {
+    // Método moderno e seguro
+    return password_hash($senha, PASSWORD_DEFAULT); 
+}
+
+function fSenhaAntiga($senha) {
+    // Cifra de César Antiga (insegura, mas necessária para retrocompatibilidade)
     $Senhacrp = '';
-    
     for ($i = 0; $i < strlen($senha); $i++) {
-        $vMid = $senha[$i];
-        $vAsc = ord($vMid);
-        
+        $vAsc = ord($senha[$i]);
         if ($vAsc > 255) {
             $Senhacrp .= chr(255);
         } else {
@@ -35,84 +43,135 @@ function fSenha($senha) {
     return $Senhacrp !== '' ? $Senhacrp : ' ';
 }
 
-// Lógica de Criptografia do NOVO CADASTRO (MD5 Truncado)
-function fSenhaNovoCadastro($senha) {
-    // 1. Gera o MD5 completo (32 caracteres)
+function fSenhaNovoCadastroAntiga($senha) {
+    // MD5 de 6 caracteres (insegura, mas necessária para retrocompatibilidade)
     $hash_completo = md5($senha); 
-    // 2. Trunca a hash MD5 para 6 caracteres (para o VARCHAR(6))
     return substr($hash_completo, 0, 6);
 }
+
+// =========================================================================
+// LÓGICA DE LOGIN E AUTENTICAÇÃO
+// =========================================================================
 
 $erro_login = '';
 $usuario_digitado = '';
 
-// Processar o formulário de login
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['usuario']) && isset($_POST['senha'])) {
     $usuario_digitado = trim($_POST['usuario']);
     $senha_digitada = trim($_POST['senha']);
     
-    // ** CORREÇÃO CRÍTICA 1: GARANTE MAIÚSCULAS NO USUÁRIO PARA SINCRONIZAR COM O CADASTRO **
+    // Consulta no DB usa o usuário em maiúsculas (assumindo que o DB armazene assim)
     $usuario_para_consulta = strtoupper($usuario_digitado);
     
-    // Validar campos vazios
     if (empty($usuario_digitado) || empty($senha_digitada)) {
         $erro_login = "Por favor, preencha todos os campos!";
     } else {
-        // Conectar ao banco
         $conn = sqlsrv_connect($serverName, $connectionOptions);
         
         if ($conn === false) {
             $erro_login = "Erro de conexão com o banco de dados.";
-            $errors = sqlsrv_errors();
-            if ($errors) {
-                $erro_login .= " Detalhes: " . $errors[0]['message'];
-            }
+            // Removido o detalhe do erro do DB para o usuário por questões de segurança
         } else {
-            // CONSULTA - Buscar pelo usuário (usando o usuário em MAIÚSCULAS)
-            $sql = "SELECT CodUsuario, Usuario, Nome, CodDepartamento, Departamento, senha 
-                    FROM vW_Usuario 
+            
+            // SELECT DE TODAS AS COLUNAS, INCLUINDO TODAS AS PERMISSÕES (CHK...)
+            $sql = "SELECT 
+                        CodUsuario, Usuario, Nome, senha, CodVendedor, CodCentroCusto, Email,
+                        chkOperadorTMK, chkSupCustos, chkSupGeral, chkSupExpedicao,
+                        chkSupRecebimento, chkGer, chkDir, chkDirAdm, chkRH,
+                        CodFuncionario, CodEmpresaFuncionario, CodTipoFuncionario, AcessaKalpaRH,
+                        Desligado, Afastado, Dt_Incl, User_Incl, Dt_Alter, User_Alt
+                    FROM dbo.tbl_Usuarios 
                     WHERE Usuario = ?";
             
-            $params = array($usuario_para_consulta); // Usa a variável em MAIÚSCULAS
+            $params = array($usuario_para_consulta);
             $stmt = sqlsrv_query($conn, $sql, $params);
             
             if ($stmt === false) {
-                $erro_login = "Erro na consulta ao banco de dados.";
-                $errors = sqlsrv_errors();
-                if ($errors) {
-                    $erro_login .= " Detalhes: " . $errors[0]['message'];
-                }
+                $erro_login = "Erro na consulta ao banco de dados. Contate o suporte.";
             } else {
                 $usuario = sqlsrv_fetch_array($stmt, SQLSRV_FETCH_ASSOC);
                 
+                $login_sucesso = false;
+                $atualizar_senha = false;
+                
                 if ($usuario) {
                     $senha_salva = $usuario['senha'];
+                    $cod_usuario = $usuario['CodUsuario'];
                     
-                    // ** CORREÇÃO CRÍTICA 2: TESTAR AS DUAS LÓGICAS DE CRIPTOGRAFIA **
-                    
-                    // Lógica A: Usuários Antigos (Criptografia fSenha)
-                    $senha_criptografada_antiga = fSenha($senha_digitada);
+                    // 1. Tentar validação com Hash Moderno (Prioridade)
+                    if (password_verify($senha_digitada, $senha_salva)) {
+                        $login_sucesso = true;
+                        // Opcional: Re-hash se o hash estiver desatualizado
+                        if (password_needs_rehash($senha_salva, PASSWORD_DEFAULT)) {
+                            $atualizar_senha = true;
+                        }
+                    } 
+                    // 2. Tentar validação com Cifra de César (Antiga - Marca para atualização)
+                    else if (fSenhaAntiga($senha_digitada) === $senha_salva) {
+                        $login_sucesso = true;
+                        $atualizar_senha = true;
+                    }
+                    // 3. Tentar validação com MD5(6) (Nova Antiga - Marca para atualização)
+                    else if (fSenhaNovoCadastroAntiga($senha_digitada) === $senha_salva) {
+                       $login_sucesso = true;
+                       $atualizar_senha = true;
+                    }
 
-                    // Lógica B: Usuários Novos (MD5 Truncado para 6 chars)
-                    $senha_criptografada_nova = fSenhaNovoCadastro($senha_digitada);
-
-                    if ($senha_criptografada_antiga === $senha_salva || $senha_criptografada_nova === $senha_salva) {
-                        // Login bem-sucedido
+                    if ($login_sucesso) {
+                        
+                        // ==========================================================
+                        // LÓGICA DE MIGRAÇÃO DE SENHA (Aprimoramento de Segurança)
+                        // ==========================================================
+                        if ($atualizar_senha) {
+                            $novo_hash = fGerarNovoHash($senha_digitada);
+                            $sql_update = "UPDATE dbo.tbl_Usuarios SET senha = ?, Dt_Alter = GETDATE() WHERE CodUsuario = ?";
+                            $params_update = array($novo_hash, $cod_usuario);
+                            sqlsrv_query($conn, $sql_update, $params_update);
+                            // Observação: Não é necessário verificar o sucesso do UPDATE aqui.
+                        }
+                        
+                        // ==========================================================
+                        // CARREGAMENTO DAS PERMISSÕES NA SESSÃO
+                        // ==========================================================
+                        
+                        // Salvar dados de autenticação
                         $_SESSION['usuario_logado'] = true;
-                        $_SESSION['usuario_id'] = $usuario['CodUsuario'];
+                        $_SESSION['usuario_id'] = $cod_usuario;
                         $_SESSION['usuario_nome'] = $usuario['Nome'];
                         $_SESSION['usuario_login'] = $usuario['Usuario'];
-                        $_SESSION['usuario_departamento'] = $usuario['Departamento'];
-                        $_SESSION['cod_departamento'] = $usuario['CodDepartamento'];
                         
+                        // Salvar todas as permissões e dados relevantes
+                        // Itera sobre o array $usuario para salvar todas as chaves 'chk...'
+                        foreach ($usuario as $chave => $valor) {
+                            // Se a chave começar com 'chk', salva na sessão com prefixo 'perm_'
+                            if (strpos($chave, 'chk') === 0) {
+                                $_SESSION['perm_' . substr($chave, 3)] = (bool)$valor; // Salva como booleano (true/false)
+                            }
+                            // Salva também outras colunas úteis
+                            if (in_array($chave, ['CodVendedor', 'CodCentroCusto', 'Email'])) {
+                                $_SESSION[strtolower($chave)] = $valor;
+                            }
+                            // Exemplo específico para AcessaKalpaRH, CodFuncionario, etc.
+                            if ($chave === 'AcessaKalpaRH') {
+                                $_SESSION['acessa_rh'] = (bool)$valor;
+                            }
+                            // Adicione aqui outros campos que você precisa globalmente na sessão (Ex: Desligado, Afastado)
+                            if ($chave === 'Desligado') {
+                                $_SESSION['desligado'] = (bool)$valor;
+                            }
+                            if ($chave === 'Afastado') {
+                                $_SESSION['afastado'] = (bool)$valor;
+                            }
+                        }
+
                         // Redirecionar para dashboard
                         header('Location: dashboard.php');
                         exit();
                     } else {
-                        $erro_login = "Senha incorreta!";
+                        $erro_login = "Usuário ou senha inválidos!";
                     }
                 } else {
-                    $erro_login = "Usuário não encontrado!";
+                    $erro_login = "Usuário ou senha inválidos!";
                 }
                 
                 sqlsrv_free_stmt($stmt);
@@ -133,10 +192,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['usuario']) && isset($
     <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
     <style>
-        /* CSS mantido intacto para a estilização */
-        /* ------------------------------------- */
-        /* 1. RESET E CONFIGURAÇÕES GLOBAIS       */
-        /* ------------------------------------- */
+        /* [ ... CÓDIGO CSS COMPLETO MANTIDO INTACTO ... ] */
         :root {
             --primary-gradient-start: #6a11cb;
             --primary-gradient-end: #2575fc;
@@ -169,11 +225,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['usuario']) && isset($
             justify-content: center;
             align-items: center;
             position: relative;
+            z-index: 0;
         }
 
-        /* ------------------------------------- */
-        /* 2. FUNDO ANIMADO E PARTÍCULAS         */
-        /* ------------------------------------- */
         .background-animation {
             position: absolute;
             top: 0;
@@ -226,9 +280,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['usuario']) && isset($
             100% { transform: translateY(-100vh) translateX(100px); opacity: 0; }
         }
 
-        /* ------------------------------------- */
-        /* 3. LAYOUT PRINCIPAL                   */
-        /* ------------------------------------- */
         .main-container {
             display: flex;
             width: 90%;
@@ -244,9 +295,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['usuario']) && isset($
             z-index: 1;
         }
 
-        /* ------------------------------------- */
-        /* 4. ÁREA DE LOGIN                      */
-        /* ------------------------------------- */
         .login-area {
             flex: 1;
             display: flex;
@@ -286,9 +334,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['usuario']) && isset($
             border-radius: 2px;
         }
 
-        /* ------------------------------------- */
-        /* 5. FORMULÁRIO ESTILIZADO              */
-        /* ------------------------------------- */
         .input-group {
             margin-bottom: 25px;
             position: relative;
@@ -360,9 +405,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['usuario']) && isset($
             color: rgba(255, 255, 255, 0.5);
         }
 
-        /* ------------------------------------- */
-        /* 6. BOTÃO DE VISUALIZAR SENHA          */
-        /* ------------------------------------- */
         .toggle-password {
             background: none;
             border: none;
@@ -383,9 +425,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['usuario']) && isset($
             transform: scale(0.95);
         }
 
-        /* ------------------------------------- */
-        /* 7. BOTÃO ESTILIZADO                   */
-        /* ------------------------------------- */
         .btn-entrar {
             width: 100%;
             padding: 15px;
@@ -428,9 +467,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['usuario']) && isset($
             transform: translateY(-1px);
         }
 
-        /* ------------------------------------- */
-        /* 8. ÁREA DO LOGO - MODIFICADA          */
-        /* ------------------------------------- */
         .logo-area {
             flex: 1;
             display: flex;
@@ -438,21 +474,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['usuario']) && isset($
             align-items: center;
             position: relative;
             overflow: hidden;
-            background: linear-gradient(135deg, rgba(37, 117, 252, 0.2), rgba(106, 17, 203, 0.2));
+            background: linear-gradient(135deg, rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.08));
         }
 
         .logo-area::before {
             content: '';
             position: absolute;
-            width: 200%;
-            height: 200%;
-            background: radial-gradient(circle, rgba(0, 242, 254, 0.1) 0%, transparent 70%);
-            animation: rotate 30s linear infinite;
+            width: 300%;
+            height: 300%;
+            background: 
+                radial-gradient(circle, rgba(255, 255, 255, 0.15) 0%, transparent 60%),
+                radial-gradient(circle, rgba(255, 255, 255, 0.1) 0%, transparent 50%);
+            animation: cosmicRotate 25s linear infinite;
+            z-index: 1;
         }
 
-        @keyframes rotate {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
+        @keyframes cosmicRotate {
+            0% { transform: rotate(0deg) scale(1); }
+            50% { transform: rotate(180deg) scale(1.05); }
+            100% { transform: rotate(360deg) scale(1); }
         }
 
         .logo-content {
@@ -463,69 +503,106 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['usuario']) && isset($
             text-align: center;
             position: relative;
             z-index: 2;
+            padding: 40px;
         }
 
-        /* LOGO "E" MODIFICADO - IGUAL AO DA EMBAQUIM */
-        .logo-icon {
-            font-family: 'Montserrat', sans-serif;
-            font-size: 120px;
-            font-weight: 900;
-            line-height: 1;
-            background: linear-gradient(135deg, #ffffff 0%, var(--accent-color) 100%);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            background-clip: text;
-            margin-bottom: 5px;
-            filter: drop-shadow(0 0 15px rgba(0, 242, 254, 0.6));
-            letter-spacing: -5px;
-            text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.3);
+        .logo-image-container {
             position: relative;
-            padding-right: 5px;
+            margin-bottom: 25px;
+            filter: drop-shadow(0 0 30px rgba(255, 255, 255, 0.4));
+            transition: all 0.3s ease;
         }
 
-        /* Efeito de brilho adicional no "E" */
-        .logo-icon::after {
-            content: 'E';
+        .logo-image {
+            width: 280px;
+            height: 280px;
+            object-fit: contain;
+            border-radius: 20px;
+            transition: all 0.3s ease;
+            filter: brightness(0) invert(1);
+        }
+
+        .logo-glow {
             position: absolute;
-            top: 0;
-            left: 0;
-            background: linear-gradient(135deg, transparent 0%, rgba(0, 242, 254, 0.2) 50%, transparent 100%);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            background-clip: text;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 130%;
+            height: 130%;
+            background: radial-gradient(circle, 
+                rgba(255, 255, 255, 0.4) 0%, 
+                rgba(255, 255, 255, 0.3) 30%, 
+                transparent 70%);
+            filter: blur(25px);
+            animation: glowPulse 2.5s ease-in-out infinite alternate;
             z-index: -1;
-            animation: logoShine 3s ease-in-out infinite;
         }
 
-        @keyframes logoShine {
-            0%, 100% { opacity: 0.3; }
-            50% { opacity: 0.7; }
+        @keyframes glowPulse {
+            0% { opacity: 0.5; transform: translate(-50%, -50%) scale(0.95); }
+            100% { opacity: 0.8; transform: translate(-50%, -50%) scale(1.05); }
         }
 
         .logo-text {
             font-family: 'Montserrat', sans-serif;
-            font-size: 42px;
+            font-size: 46px;
             font-weight: 800;
-            letter-spacing: 3px;
-            background: linear-gradient(to right, #ffffff 0%, var(--accent-color) 100%);
+            letter-spacing: 4px;
+            background: linear-gradient(135deg, #ffffff 0%, #f0f0f0 100%);
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
             background-clip: text;
-            text-shadow: 1px 1px 3px rgba(0, 0, 0, 0.2);
-            margin-top: -5px;
+            margin-bottom: 8px;
+            text-shadow: 0 0 25px rgba(255, 255, 255, 0.4);
+            position: relative;
+        }
+
+        .logo-text::after {
+            content: '';
+            position: absolute;
+            bottom: -8px;
+            left: 0;
+            width: 100%;
+            height: 3px;
+            background: linear-gradient(90deg, transparent, #ffffff, transparent);
+            animation: lineScan 3s ease-in-out infinite;
+        }
+
+        @keyframes lineScan {
+            0%, 100% { opacity: 0; transform: scaleX(0); }
+            50% { opacity: 1; transform: scaleX(1); }
         }
 
         .logo-subtitle {
-            margin-top: 8px;
-            font-size: 16px;
-            color: rgba(255, 255, 255, 0.8);
-            font-weight: 400;
-            letter-spacing: 1.5px;
+            font-family: 'Montserrat', sans-serif;
+            font-size: 18px;
+            font-weight: 500;
+            color: rgba(255, 255, 255, 0.9);
+            letter-spacing: 3px;
+            text-transform: uppercase;
+            margin-top: 12px;
+            position: relative;
         }
 
-        /* ------------------------------------- */
-        /* 9. EFEITOS EXTRAS                     */
-        /* ------------------------------------- */
+        .logo-subtitle::before {
+            content: '✦';
+            margin-right: 12px;
+            color: #ffffff;
+            animation: twinkle 2s ease-in-out infinite;
+        }
+
+        .logo-subtitle::after {
+            content: '✦';
+            margin-left: 12px;
+            color: #ffffff;
+            animation: twinkle 2s ease-in-out infinite reverse;
+        }
+
+        @keyframes twinkle {
+            0%, 100% { opacity: 0.4; transform: scale(0.8); }
+            50% { opacity: 1; transform: scale(1.2); }
+        }
+
         .glow-effect {
             position: absolute;
             width: 100%;
@@ -571,9 +648,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['usuario']) && isset($
             100% { transform: translate(-50px, -50px); }
         }
 
-        /* ------------------------------------- */
-        /* 10. RESPONSIVIDADE                    */
-        /* ------------------------------------- */
         @media (max-width: 768px) {
             .main-container {
                 flex-direction: column;
@@ -594,9 +668,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['usuario']) && isset($
                 font-size: 28px;
             }
 
-            .logo-icon {
-                font-size: 80px;
-                letter-spacing: -3px;
+            .logo-image {
+                width: 200px;
+                height: 200px;
             }
 
             .logo-text {
@@ -606,9 +680,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['usuario']) && isset($
         }
 
         @media (max-width: 480px) {
-            .logo-icon {
-                font-size: 70px;
-                letter-spacing: -2px;
+            .logo-image {
+                width: 150px;
+                height: 150px;
             }
 
             .logo-text {
@@ -617,9 +691,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['usuario']) && isset($
             }
         }
 
-        /* ------------------------------------- */
-        /* 11. ANIMAÇÃO DE ENTRADA               */
-        /* ------------------------------------- */
         @keyframes fadeInUp {
             from {
                 opacity: 0;
@@ -635,9 +706,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['usuario']) && isset($
             animation: fadeInUp 0.8s ease-out;
         }
 
-        /* ------------------------------------- */
-        /* 12. MENSAGEM DE ERRO                  */
-        /* ------------------------------------- */
         .error-message {
             background: rgba(239, 68, 68, 0.2); 
             border: 1px solid rgba(239, 68, 68, 0.5); 
@@ -654,19 +722,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['usuario']) && isset($
             margin-right: 8px;
         }
         
-        /* ------------------------------------- */
-        /* 13. LINK DE CADASTRO (NOVO)           */
-        /* ------------------------------------- */
         .register-link-container {
             text-align: center;
             margin-top: 30px;
             font-size: 14px;
             color: rgba(255, 255, 255, 0.7);
-            animation: fadeInUp 0.8s ease-out 0.2s backwards; /* Atraso na animação */
+            animation: fadeInUp 0.8s ease-out 0.2s backwards;
         }
 
         .register-link {
-            color: var(--accent-color); /* Cor de destaque (Azul Claro) */
+            color: var(--accent-color);
             text-decoration: none;
             font-weight: 700;
             margin-left: 5px;
@@ -688,7 +753,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['usuario']) && isset($
         }
 
         .register-link:hover {
-            color: #ffffff; /* Fica branco no hover */
+            color: #ffffff;
             text-shadow: 0 0 5px var(--accent-color);
         }
         
@@ -744,25 +809,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['usuario']) && isset($
                         Entrar
                     </button>
                 </form>
-                
-                <div class="register-link-container">
-                    <span>Não tem uma conta?</span>
-                    <a href="meuperfil.php" class="register-link">Cadastre-se aqui</a>
-                </div>
             </div>
         </div>
 
         <div class="logo-area">
             <div class="logo-content">
-                <div class="logo-icon">E</div>
-                <span class="logo-text">embaquim</span>
-                <p class="logo-subtitle">Tecnologia & Inovação</p>
+                <div class="logo-image-container">
+                    <div class="logo-glow"></div>
+                    <img src="img/logo2025.png" alt="Logo Embaquim 2025" class="logo-image">
+                    <div class="logo-subtitle">Tecnologia & Inovação</div>
+                </div>
             </div>
         </div>
     </div>
 
     <script>
-        // Criar partículas dinâmicas
+        // [ ... CÓDIGO JAVASCRIPT COMPLETO MANTIDO INTACTO ... ]
         document.addEventListener('DOMContentLoaded', function() {
             const particlesContainer = document.getElementById('particles');
             const particleCount = 50;
@@ -804,11 +866,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['usuario']) && isset($
                     if (type === 'text') {
                         icon.classList.remove('fa-eye');
                         icon.classList.add('fa-eye-slash');
-                        this.style.color = 'var(--accent-color)'; // Destaque quando a senha está visível
+                        this.style.color = 'var(--accent-color)';
                     } else {
                         icon.classList.remove('fa-eye-slash');
                         icon.classList.add('fa-eye');
-                        this.style.color = ''; // Voltar à cor padrão
+                        this.style.color = '';
                     }
                 });
             }
@@ -852,15 +914,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['usuario']) && isset($
             }
             
             // Efeito de digitação no placeholder
-            const usuarioInput = document.getElementById('usuario');
-            const passwordInputRef = document.getElementById('senha'); // Renomeando para evitar conflito
+            const usuarioInputRef = document.getElementById('usuario');
+            const passwordInputRef = document.getElementById('senha');
             
-            if (usuarioInput) {
-                usuarioInput.addEventListener('focus', function() {
+            if (usuarioInputRef) {
+                usuarioInputRef.addEventListener('focus', function() {
                     this.placeholder = '';
                 });
-                
-                usuarioInput.addEventListener('blur', function() {
+                usuarioInputRef.addEventListener('blur', function() {
                     if (this.value === '') {
                         this.placeholder = 'Digite seu usuário';
                     }
@@ -871,7 +932,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['usuario']) && isset($
                 passwordInputRef.addEventListener('focus', function() {
                     this.placeholder = '';
                 });
-                
                 passwordInputRef.addEventListener('blur', function() {
                     if (this.value === '') {
                         this.placeholder = 'Digite sua senha';
