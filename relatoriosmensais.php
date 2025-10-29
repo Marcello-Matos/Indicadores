@@ -180,6 +180,7 @@ if ($conn === false) {
     <title>Relatórios Mensais | Embaquim</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
     <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;700&display=swap" rel="stylesheet">
+    <link rel="icon" href="img/favicon.png" type="image/x-icon">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         /* ------------------------------------- */
